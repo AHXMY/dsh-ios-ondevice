@@ -31,6 +31,9 @@ static const NSUInteger kStepCount = 4;
 @property (nonatomic) NSUInteger typedCharacters;
 @property (nonatomic, nullable) NSTimer *typewriter;
 @property (nonatomic, nullable) TerminalViewController *terminalVC;
+/// Covers a terminal that is reloading after the harness exited, so the wait
+/// reads as reconnecting rather than as a screen that ignores the keyboard.
+@property (nonatomic, nullable) UIView *reconnectOverlay;
 @property (nonatomic) BOOL handedOff;
 @end
 
@@ -354,6 +357,16 @@ static NSUInteger stepForPhase(DSHBootPhase phase) {
                                           selector:@selector(terminalDidEnterAlternateScreen:)
                                               name:DSHTerminalDidEnterAlternateScreenNotification
                                             object:nil];
+    // The other half of the same idea: the harness exits from time to time and
+    // the app answers a finished session with a fresh shell, which then loads for
+    // half a minute with nothing listening to the keyboard. Covering that window
+    // is the difference between "the terminal is reconnecting" and "the terminal
+    // is broken" -- reported from the phone as a screen that stays for minutes
+    // and accepts no input.
+    [NSNotificationCenter.defaultCenter addObserver:self
+                                          selector:@selector(terminalDidLeaveAlternateScreen:)
+                                              name:DSHTerminalDidLeaveAlternateScreenNotification
+                                            object:nil];
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(180 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -363,7 +376,71 @@ static NSUInteger stepForPhase(DSHBootPhase phase) {
 }
 
 - (void)terminalDidEnterAlternateScreen:(NSNotification *)notification {
+    [self.reconnectOverlay removeFromSuperview];
+    self.reconnectOverlay = nil;
     [self revealTerminal];
+}
+
+- (void)terminalDidLeaveAlternateScreen:(NSNotification *)notification {
+    [self revealTerminal];
+    [self showReconnectOverlay];
+}
+
+/// Cover the terminal while a fresh shell loads the harness.
+///
+/// The overlay is plain and says what is happening, including why typing does
+/// nothing yet; it comes down on the TUI's next enter-alternate-screen.
+- (void)showReconnectOverlay {
+    if (self.reconnectOverlay != nil)
+        return;
+    UIView *overlay = [[UIView alloc] init];
+    overlay.backgroundColor = UIColor.blackColor;
+    overlay.translatesAutoresizingMaskIntoConstraints = NO;
+    overlay.alpha = 0;
+    [self.view addSubview:overlay];
+
+    UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
+        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    spinner.color = UIColor.whiteColor;
+    spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    [spinner startAnimating];
+    [overlay addSubview:spinner];
+
+    UILabel *label = [[UILabel alloc] init];
+    label.text = @"终端重新连接中，正在加载…";
+    label.textColor = UIColor.whiteColor;
+    label.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.numberOfLines = 0;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [overlay addSubview:label];
+
+    UILabel *hint = [[UILabel alloc] init];
+    hint.text = @"约 20~40 秒，这段时间键盘没有反应是正常的";
+    hint.textColor = [UIColor colorWithWhite:1.0 alpha:0.55];
+    hint.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    hint.textAlignment = NSTextAlignmentCenter;
+    hint.numberOfLines = 0;
+    hint.translatesAutoresizingMaskIntoConstraints = NO;
+    [overlay addSubview:hint];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [overlay.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [overlay.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [overlay.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [overlay.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [spinner.centerXAnchor constraintEqualToAnchor:overlay.centerXAnchor],
+        [spinner.centerYAnchor constraintEqualToAnchor:overlay.centerYAnchor constant:-24],
+        [label.topAnchor constraintEqualToAnchor:spinner.bottomAnchor constant:14],
+        [label.leadingAnchor constraintEqualToAnchor:overlay.leadingAnchor constant:24],
+        [label.trailingAnchor constraintEqualToAnchor:overlay.trailingAnchor constant:-24],
+        [hint.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:8],
+        [hint.leadingAnchor constraintEqualToAnchor:overlay.leadingAnchor constant:24],
+        [hint.trailingAnchor constraintEqualToAnchor:overlay.trailingAnchor constant:-24],
+    ]];
+    self.reconnectOverlay = overlay;
+    [UIView animateWithDuration:0.2 animations:^{ overlay.alpha = 1; }];
+    [DSHHarness.shared.log append:@"[dsh-ios] reconnect overlay up (the harness left the screen)"];
 }
 
 /// Drop the launch screen -- once, whenever the terminal is ready or time is up.
@@ -372,9 +449,8 @@ static NSUInteger stepForPhase(DSHBootPhase phase) {
     if (stack == nil)
         return;
     self.launchStack = nil;
-    [NSNotificationCenter.defaultCenter removeObserver:self
-                                                  name:DSHTerminalDidEnterAlternateScreenNotification
-                                                object:nil];
+    // The notifications stay subscribed: the alternate-screen pair keeps being
+    // useful after the launch screen is gone (it drives the reconnect overlay).
     [UIView animateWithDuration:0.35 animations:^{
         stack.alpha = 0;
     } completion:^(BOOL finished) {

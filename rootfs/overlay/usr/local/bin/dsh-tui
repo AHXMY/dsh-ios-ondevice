@@ -119,17 +119,25 @@ if [ -r /proc/ish/documents ]; then
                     fi
                 fi
             fi
-            # Session restore: a tarball of $DSH_HOME/sessions dropped in Documents
-            # is unpacked before the harness starts. A reinstall (Sideloadly
-            # uninstalls first, so iOS deletes the container) otherwise loses every
-            # conversation, and AFC cannot bring them back -- it can overwrite
-            # existing files but new ones never appear in iSH's metadata. This runs
-            # inside the guest, so it can create them. Same shape as the preset:
-            # applied only when the sha differs from the marker.
+            # Conversation restore: a tarball of $DSH_HOME/sessions dropped in
+            # Documents is unpacked before the harness starts, because a
+            # reinstall (Sideloadly uninstalls first, so iOS deletes the
+            # container) otherwise loses every conversation, and AFC cannot bring
+            # them back -- it can overwrite existing files but new ones never
+            # appear in iSH's metadata. This runs inside the guest, so it can.
+            #
+            # It only ever runs into an EMPTY store, and that condition is the
+            # whole safety of this block. The archive is a snapshot from the
+            # moment it was packed; unpacking it over a live store replaces newer
+            # conversations with older copies of themselves, and the marker file
+            # cannot prevent that -- the marker lives in the container, so a
+            # reinstall erases it and every later start looks like a first start.
+            # Reported from the phone as "the last few messages are gone".
             if [ -f "$HOST_DOCS_MNT/dsh-sessions.tar.gz" ]; then
                 swant=$(cat "$HOST_DOCS_MNT/dsh-sessions.sha256" 2>/dev/null | tr -d ' \r\n' || true)
                 shave=$(cat "$DSH_HOME/.sessions-restored-sha" 2>/dev/null | tr -d ' \r\n' || true)
-                if [ -n "$swant" ] && [ "$swant" != "$shave" ]; then
+                live=$(ls -1d "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | wc -l | tr -d ' ')
+                if [ -n "$swant" ] && [ "$swant" != "$shave" ] && [ "${live:-0}" -eq 0 ]; then
                     mkdir -p "$DSH_HOME/sessions" 2>/dev/null || true
                     if tar xzf "$HOST_DOCS_MNT/dsh-sessions.tar.gz" -C "$DSH_HOME/sessions" 2>/dev/null; then
                         # An archive packed from the parent directory carries one

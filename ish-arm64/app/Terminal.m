@@ -16,6 +16,7 @@
 extern struct tty_driver ios_pty_driver;
 
 NSNotificationName const DSHTerminalDidEnterAlternateScreenNotification = @"DSHTerminalDidEnterAlternateScreenNotification";
+NSNotificationName const DSHTerminalDidLeaveAlternateScreenNotification = @"DSHTerminalDidLeaveAlternateScreenNotification";
 
 #if !ISH_LINUX
 typedef struct tty *tty_t;
@@ -214,39 +215,70 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
 
 /// Watch the output stream for the moment a full-screen application takes over.
 ///
-/// The harness TUI's first frame starts with `\x1b[?1049h` (enter alternate
-/// screen), and its own renderer writes that before anything else. The app's
-/// launch screen stays up until this fires, so a user sees one startup instead of
-/// three: the splash, then the shell's loading banner as a stage nobody can
-/// interact with, then finally the real screen.
+/// The harness TUI's frames are bracketed by `\x1b[?1049h` (enter alternate
+/// screen) and `\x1b[?1049l` (leave it), and it writes the enter sequence before
+/// anything else. Both are wanted:
 ///
-/// A read can split the sequence, so the tail of the previous buffer is carried
-/// into the search, and the check stops after the first hit -- this runs on every
-/// chunk of terminal output for the life of the process.
+///   * enter -- the app's launch screen stays up until this fires, so a user sees
+///     one startup instead of three (splash, then the shell's loading text as a
+///     stage nobody can interact with, then the real screen);
+///   * leave -- the harness has exited, the app is about to start a fresh shell
+///     that will spend half a minute loading, and the app covers that window with
+///     an overlay instead of exposing a terminal that takes no input.
+///
+/// A read can split a sequence, so the tail of the previous buffer is carried into
+/// the search. This runs on every chunk of terminal output for the life of the
+/// process, so it stays allocation-light and compares bytes.
 - (void)dshNoteAlternateScreen:(const void *)buf length:(int)len {
-    if (self.dshSawAlternateScreen || len <= 0)
+    if (len <= 0)
         return;
-    static const char kSequence[] = "\x1b[?1049h";
-    const NSUInteger sequenceLength = sizeof(kSequence) - 1;
+    static const char kEnter[] = "\x1b[?1049h";
+    static const char kLeave[] = "\x1b[?1049l";
+    const NSUInteger sequenceLength = sizeof(kEnter) - 1;
+    NSUInteger keep = sequenceLength - 1;
+
     NSMutableData *window = [NSMutableData dataWithData:self.dshOutputTail ?: [NSData data]];
+    NSUInteger tailLength = window.length;
     [window appendBytes:buf length:(NSUInteger) len];
-    NSRange found = [window rangeOfData:[NSData dataWithBytes:kSequence length:sequenceLength]
-                                options:0
-                                  range:NSMakeRange(0, window.length)];
-    if (found.location != NSNotFound) {
-        self.dshSawAlternateScreen = YES;
-        self.dshOutputTail = nil;
-        // Posted on the main queue: the observer drives the UI, and this method
-        // runs on whichever thread handed the guest its output.
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [NSNotificationCenter.defaultCenter
-                postNotificationName:DSHTerminalDidEnterAlternateScreenNotification
-                              object:self];
-        });
+    const char *bytes = window.bytes;
+
+    // The later of the two, when a buffer happens to carry both.
+    NSInteger latest = NSNotFound;
+    BOOL latestIsEnter = NO;
+    for (NSUInteger i = 0; i + sequenceLength <= window.length; i++) {
+        if (bytes[i] != '\x1b')
+            continue;
+        if (memcmp(bytes + i, kEnter, sequenceLength) == 0) {
+            latest = (NSInteger) i;
+            latestIsEnter = YES;
+        } else if (memcmp(bytes + i, kLeave, sequenceLength) == 0) {
+            latest = (NSInteger) i;
+            latestIsEnter = NO;
+        }
+    }
+
+    if (latest == NSNotFound) {
+        NSUInteger take = MIN(keep, window.length);
+        self.dshOutputTail = [window subdataWithRange:NSMakeRange(window.length - take, take)];
         return;
     }
-    NSUInteger keep = MIN(sequenceLength - 1, window.length);
-    self.dshOutputTail = [window subdataWithRange:NSMakeRange(window.length - keep, keep)];
+
+    // The sequence itself was consumed: keep only what follows it.
+    NSUInteger after = (NSUInteger) latest + sequenceLength;
+    NSUInteger take = MIN(keep, window.length - after);
+    self.dshOutputTail = take > 0 ? [window subdataWithRange:NSMakeRange(window.length - take, take)] : nil;
+
+    if (latestIsEnter)
+        self.dshSawAlternateScreen = YES;
+
+    // Posted on the main queue: the observer drives the UI, and this method runs
+    // on whichever thread handed the guest its output.
+    NSString *name = latestIsEnter ? DSHTerminalDidEnterAlternateScreenNotification
+                                   : DSHTerminalDidLeaveAlternateScreenNotification;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter postNotificationName:name object:self];
+    });
+    (void) tailLength;
 }
 
 #if ISH_LINUX
