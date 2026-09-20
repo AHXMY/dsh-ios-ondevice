@@ -71,13 +71,21 @@ sed 's/^/     /' "$WORK/sanity.txt"
 check "node >= 22.19 in guest" grep -Eq '^v(22\.(19|[2-9][0-9])|2[3-9]|[3-9][0-9])' "$WORK/sanity.txt"
 check "dsh 0.1.x in guest"      grep -Eq '^0\.1\.' "$WORK/sanity.txt"
 check "dsh-selftest passes"     grep -q 'SELFTEST OK' "$WORK/sanity.txt"
-check "sharp keeps musl arm64 runtime" test -d "$WORK/fakefs/data/usr/local/lib/node_modules/@img/sharp-linuxmusl-arm64"
-check "sharp drops unusable glibc runtime" test ! -e "$WORK/fakefs/data/usr/local/lib/node_modules/@img/sharp-linux-arm64"
-check "sharp drops unusable wasm fallback" test ! -e "$WORK/fakefs/data/usr/local/lib/node_modules/@img/sharp-wasm32"
-# The prune is by rule, not by the three names above: npm resolves every
-# platform's optional build when there is no lockfile to pin the set, and the
-# win32/darwin payloads are tens of MB each. Exactly the musl pair may survive.
-check "sharp keeps only the musl arm64 pair" test "$(ls -1 "$WORK/fakefs/data/usr/local/lib/node_modules/@img" 2>/dev/null | wc -l | tr -d ' ')" = "2"
+IMGDIR="$WORK/fakefs/data/usr/local/lib/node_modules/@img"
+check "sharp keeps musl arm64 runtime" test -d "$IMGDIR/sharp-linuxmusl-arm64"
+check "sharp keeps the matching libvips" test -d "$IMGDIR/sharp-libvips-linuxmusl-arm64"
+check "sharp keeps its js dependency colour" test -d "$IMGDIR/colour"
+check "sharp drops unusable glibc runtime" test ! -e "$IMGDIR/sharp-linux-arm64"
+check "sharp drops unusable glibc libvips" test ! -e "$IMGDIR/sharp-libvips-linux-arm64"
+check "sharp drops unusable wasm build" test ! -e "$IMGDIR/sharp-webcontainers-wasm32"
+check "sharp drops unusable win32 build" test ! -e "$IMGDIR/sharp-win32-x64"
+# The prune is by rule, not by the names above: npm resolves every platform's
+# optional build when there is no lockfile to pin the set, and the win32/darwin
+# payloads are tens of MB each. Only the musl arm64 pair plus the plain-JavaScript
+# packages may survive -- and the JS ones must, sharpen imports @img/colour.
+LEFTOVER=$(ls -1 "$IMGDIR" 2>/dev/null | grep -Ev '^(colour|sharp-linuxmusl-arm64|sharp-libvips-linuxmusl-arm64)$' | tr '\n' ' ')
+check "no other platform payload survives" test -z "$LEFTOVER"
+[ -n "$LEFTOVER" ] && echo "      leftover: $LEFTOVER"
 if find "$WORK/fakefs/data" -name '._*' -print -quit | grep -q .; then
     bad "rootfs contains no macOS AppleDouble files"
 else

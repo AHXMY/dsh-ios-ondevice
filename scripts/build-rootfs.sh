@@ -140,16 +140,25 @@ rm -rf payload/usr/local/lib/node_modules/@img/sharp-linux-arm64 \
        payload/usr/local/lib/node_modules/@img/sharp-libvips-linux-arm64 \
        payload/usr/local/lib/node_modules/@img/sharp-wasm32
 if [ -d payload/usr/local/lib/node_modules/@img ]; then
-    # Only the platform binaries are pruned. @img also holds plain-JavaScript
-    # packages that the platform builds depend on -- @img/colour is imported by
-    # sharp/dist/colour.mjs -- and deleting those took the whole tree down on the
-    # device with "Cannot find package '@img/colour'". Match sharp's own binary
-    # naming and leave everything else alone.
+    # Only the platform binaries are pruned; the plain-JavaScript packages @img
+    # also ships (colour, imported by sharp/dist/colour.mjs) must survive, or the
+    # tree dies with "Cannot find package '@img/colour'".
+    #
+    # ...and so must the musl pair. The previous rule matched 'sharp-linux*' and
+    # 'sharp-libvips-linux*', which swallow sharp-linuxmusl-arm64 and
+    # sharp-libvips-linuxmusl-arm64 -- exactly the two this musl guest loads. The
+    # result on device was "Could not load the sharp module using the
+    # linuxmusl-arm64 runtime" from @deepseek-ai/dsh-attachment-local, which the
+    # plugin loader reports as a failed entry import. Excluding the musl names
+    # explicitly keeps every other platform out and these two in.
     find payload/usr/local/lib/node_modules/@img -mindepth 1 -maxdepth 1 \
-        \( -name 'sharp-linux*' -o -name 'sharp-darwin*' -o -name 'sharp-win32*' \
-           -o -name 'sharp-freebsd*' -o -name 'sharp-webcontainers*' -o -name 'sharp-wasm32' \
-           -o -name 'sharp-libvips-linux*' -o -name 'sharp-libvips-darwin*' \) \
+        \( -name 'sharp-*' ! -name 'sharp-linuxmusl-arm64' -o \
+           -name 'sharp-libvips-*' ! -name 'sharp-libvips-linuxmusl-arm64' \) \
         -exec rm -rf {} + 2>/dev/null || true
+    for keep in sharp-linuxmusl-arm64 sharp-libvips-linuxmusl-arm64 colour; do
+        [ -e "payload/usr/local/lib/node_modules/@img/$keep" ] ||
+            die "@img/$keep was pruned but this guest needs it"
+    done
     echo "  @img kept: $(ls payload/usr/local/lib/node_modules/@img 2>/dev/null | tr '\n' ' ')"
 fi
 cp "$ISH_SRC"/app/RootfsPatch.bundle/files/lib/*.js payload/lib/
@@ -225,21 +234,36 @@ cat > /root/.dsh/profiles/tui/package.json <<'TUI_PROFILE_EOF'
 }
 TUI_PROFILE_EOF
 install -m 0644 /usr/local/share/dsh/tui.patch.yml /root/.dsh/profiles/tui/cordis.patch.yml
-# dsh's profile bootstrap writes resolution redirects for a bundle's dependency
-# closure but not for the bundle itself, so the terminal app cannot be resolved
-# from its own profile. On the device the whole tree died with:
+# The terminal app has to be resolvable from its own profile directory, and dsh
+# does not do that for the bundle itself: healProfileModuleFallback() projects a
+# bundle's *dependency closure* and then drops the bundle name out of it
+# ("for (const layer of profile.layers) bundleLinks.delete(...)"). A custom
+# profile has no pnpm install behind it, so the bundle is plumbed by hand here.
+#
+# The shape matters, and the first attempt got it wrong in a way that aborted the
+# whole plugin tree. dsh manages <profile>/.dsh-module-fallback/node_modules/<pkg>
+# itself and treats anything there that is neither a symlink nor a dsh-managed ESM
+# proxy directory as hostile -- ensureSymlink() throws "exists and is not a
+# symlink or dsh-managed module proxy" and profile init dies. This build used to
+# write two plain text files holding a path (one at each level of the chain); dsh
+# choked on the first one, and the only thing visible on device was
 #   Cannot find package '@brianynwu/dsh-tui' imported from /root/.dsh/profiles/tui/
-# The chain it builds for everything else is
-#   <profile>/node_modules/<pkg>
-#     -> <profile>/.dsh-module-fallback/node_modules/<pkg>
-#       -> /usr/local/lib/node_modules/<pkg>
-# so the missing pair is written here, in the same shape.
-mkdir -p "/root/.dsh/profiles/tui/node_modules/$TUI_SCOPE" \
-         "/root/.dsh/profiles/tui/.dsh-module-fallback/node_modules/$TUI_SCOPE"
-printf '%s\n' "/root/.dsh/profiles/tui/.dsh-module-fallback/node_modules/$DSH_TUI_PACKAGE" \
-    > "/root/.dsh/profiles/tui/node_modules/$DSH_TUI_PACKAGE"
-printf '%s\n' "/usr/local/lib/node_modules/$DSH_TUI_PACKAGE" \
-    > "/root/.dsh/profiles/tui/.dsh-module-fallback/node_modules/$DSH_TUI_PACKAGE"
+# The fallback directory is also swept by dsh's own cleanup: a name that is not in
+# the bundle closure gets removeProfileSymlink()ed, so anything parked there has
+# to expect deletion.
+#
+# So: one symlink, in the profile's own node_modules, pointing straight at the
+# installation copy, and nothing at all in .dsh-module-fallback (dsh heals that
+# directory for the closure itself). ensureProfileSymlink() returns immediately
+# when the path already exists, and removeProfileSymlink() only unlinks a profile
+# entry that points into the fallback directory -- this link is not dsh's to take.
+mkdir -p "/root/.dsh/profiles/tui/node_modules/$TUI_SCOPE"
+rm -f "/root/.dsh/profiles/tui/node_modules/$DSH_TUI_PACKAGE"
+ln -s "/usr/local/lib/node_modules/$DSH_TUI_PACKAGE" \
+    "/root/.dsh/profiles/tui/node_modules/$DSH_TUI_PACKAGE"
+test -e "/root/.dsh/profiles/tui/node_modules/$DSH_TUI_PACKAGE/package.json" || {
+    echo "error: the tui bundle symlink does not resolve"
+}
 # Compose it, then actually boot it.
 #
 # --dump-config only composes the configuration; it does not import a single
