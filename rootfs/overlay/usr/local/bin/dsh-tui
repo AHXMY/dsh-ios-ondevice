@@ -119,6 +119,25 @@ if [ -r /proc/ish/documents ]; then
                     fi
                 fi
             fi
+            # The model credential travels the same way the preset does, and for
+            # the same reason.
+            #
+            # It cannot be baked into the image (a secret does not belong in a
+            # repository), and it cannot be written into the container before the
+            # first launch either, because the guest's own paths do not exist
+            # until the app has unpacked that image. Documents exists from the
+            # moment the app is installed and the guest reads it through this
+            # mount, so the key is staged there and applied here -- which is what
+            # makes a fresh install usable on its FIRST launch instead of after
+            # someone pushes files into a running container.
+            if [ -f "$HOST_DOCS_MNT/dsh-key.env" ]; then
+                if ! grep -q '^DEEPSEEK_API_KEY=.' "$DSH_HOME/.env" 2>/dev/null; then
+                    if cp "$HOST_DOCS_MNT/dsh-key.env" "$DSH_HOME/.env" 2>/dev/null; then
+                        printf '\033[1;32m已从 Documents 安装 API key\033[0m\n'
+                        sleep 1
+                    fi
+                fi
+            fi
             # Conversation restore: a tarball of $DSH_HOME/sessions dropped in
             # Documents is unpacked before the harness starts, because a
             # reinstall (Sideloadly uninstalls first, so iOS deletes the

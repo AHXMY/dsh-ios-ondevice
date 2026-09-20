@@ -1,0 +1,161 @@
+# Profile layer for the `tui` terminal surface, applied after the dsh-tui
+# bundle (profiles/tui/cordis.patch.yml is this file, installed by
+# scripts/build-rootfs.sh).
+#
+# The TUI, like headless, has no approval/request answerer: the repository note
+# 2026-07-31-workspace-write-surface-default.md records that "the TUI has no
+# approval/request answerer", so a session left on `ask` would fail closed to
+# `unavailable` and reject every sensitive action with nobody to ask. The guest
+# kernel has no bwrap or Landlock either, which is the same reason the web
+# profile is pinned here: an unusable confinement runner fails closed with
+# SANDBOX_UNAVAILABLE rather than running unconfined.
+#
+# The whole guest already runs inside the iOS app sandbox, so the sandbox knob
+# has nothing left to enforce; the only real choice is whether risky tool calls
+# ask, and there is nobody here to answer.
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.env.DSH_WORKSPACE ?? process.cwd()
+- id: permission
+  config:
+    defaultPreset: danger-full-access
+    presets:
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+
+# The default model route, so the terminal works without a first `/model`.
+#
+# The TUI bundle deliberately hardcodes no provider/model: `main`'s route is
+# normally supplied by the host through the `agent/request` waterfall and picked
+# at runtime by `/model`. Its own patch file says a deployment that wants a
+# standalone default "re-patches this row with provider/model in its own
+# profile/overlay" -- this is that re-patch. A patch replaces the targeted row's
+# whole `config`, so the row is restated exactly as the bundle writes it.
+#
+# Ids are the real ones from @deepseek-ai/llm-deepseek: the single provider route
+# is `deepseek-official`, and its catalog is deepseek-v4-flash /
+# deepseek-v4-pro / deepseek-v4-flash-vision-exp. `/model` still overrides this
+# per session at runtime.
+- id: agent-loop
+  inject: [tuiStartup]
+  config:
+    agents:
+      - id: main
+        cwd: !!js process.cwd()
+        provider: deepseek-official
+        model: deepseek-flash
+        reasoningEffort: max
+
+# Retry policy: ride out a model-path outage instead of killing the turn.
+#
+# The harness reaches the model through the app's loopback forwarder, and iOS
+# tears an app's listening sockets down when it suspends it -- iSH's own
+# sockrestart comments call this platform behaviour out. Measured on this
+# device: the listener was logged up at launch (+0.07s), then the guest's own
+# probe got ECONNREFUSED at +71s while the guest was still running and heart-
+# beating, and a direct host-side connection to the same port also failed. With
+# the default policy (5 retries, 0.5s..10s backoff) the whole budget is spent in
+# about thirty seconds, so any outage longer than that turns into "retrying
+# model request 5/5" and a dead turn -- the exact failure reported from the
+# phone, with 45 retries and 6 successful messages in one session log.
+#
+# `mode: always` has no retry ceiling: the delays stay capped, the status line
+# keeps saying it is retrying, and Esc still interrupts the turn. `TRANSPORT` is
+# in the default retryable set, and an auth failure is not, so a bad key still
+# fails fast rather than looping.
+#
+# `retryPolicy` is a top-level key of this row's own Config schema
+# (@deepseek-ai/dsh-llm-deepseek/lib/index.js), and a profile patch replaces the
+# row's whole `config`, so the bundle's own values are restated above it.
+#
+# `streamIdleTimeoutMs` ships at 300000 (five minutes). A request that hangs --
+# which is what a request looks like when the loopback hop accepts nothing --
+# therefore stalls for five minutes before the harness even calls it TIMEOUT, and
+# the terminal sits on "retrying model request 1/5" for that whole time. That is
+# the shape reported from the phone, and it is why a retry policy alone is not
+# enough: with no failure there is nothing to retry. Two minutes bounds the stall
+# without cutting off a slow first token, and the watchdog counts idle time only,
+# so a stream still delivering reasoning deltas never trips it.
+# `mode: always` was wrong, and it was mine.
+#
+# It has no ceiling, which sounded right for "ride out a short outage" -- but
+# the terminal UI makes a model call while it is starting up, so an outage at
+# that moment stops the first frame from ever being painted: measured on device,
+# the launch screen sat there for 193 seconds while the retry loop held the
+# startup open, and the user watched three screens in sequence with a terminal
+# that took no input. A bounded budget still covers a real outage (about two
+# minutes of retries at these delays) and always hands control back.
+- id: llm-deepseek
+  config:
+    thinking: enabled
+    reasoningEffort: max
+    streamIdleTimeoutMs: 120000
+    retryPolicy:
+      mode: normal
+      maxRetries: 20
+      backoff:
+        initialDelayMs: 800
+        maxDelayMs: 6000
+        jitterRatio: 0.2
+
+# Terminal notifications: off.
+#
+# The TUI emits a desktop-notification escape sequence when it wants attention
+# (its config key `notifications` defaults to true). iSH's terminal is hterm
+# running inside a WKWebView, and hterm's notification path calls
+# `new Notification(...)` with no existence check (hterm.js:260). WKWebView has
+# no `Notification` constructor, so the call throws:
+#
+#   error sending bytes to the terminal: WKErrorDomain Code=4 "A JavaScript
+#   exception occurred" ... ReferenceError: Can't find variable: Notification
+#   ... hterm_all.js
+#
+# Once that throws, the terminal stops accepting output -- the screen goes
+# blank, which is exactly the "black screen" this app kept showing. Nothing in
+# the guest can receive those notifications anyway (there is no browser
+# permission flow inside the app), so the sequence buys nothing and costs the
+# whole terminal.
+#
+# This is the fix that needs no app rebuild; the hardening on the hterm side
+# (guarding `typeof Notification`) belongs in the app and is tracked separately.
+- id: tui
+  inject: [tuiStartup, permissionPresets, subagents]
+  config:
+    sessionId: !!js ctx.tuiStartup.sessionId
+    showReasoning: true
+    # Tool cards ship collapsed, which is why the terminal looks nothing like the
+    # Claude Code surface it is modelled on: the calls and their output are the
+    # part a user reads, and hiding them leaves a wall of prose. Expanded is the
+    # shape that matches the surfaces this UI is copying.
+    toolCardVisibility: expanded
+    maxToolOutputLines: 12
+    notifications: false
+    resumeHint: !!js "process.env.DSH_TUI_RESUME_HINT ?? 'To resume this session: dsh --profile tui --resume={session}'"
+
+# The security preset, mounted as this deployment's default.
+#
+# dsh-base does not mount @deepseek-ai/dsh-agent-presets at all -- only the web
+# app composition does -- so in the terminal profile a preset is never offered
+# and every session runs the bare `base` composition: no persona, no tool set of
+# its own. This row puts the service in, with the same id the desktop uses
+# (agent-presets.default: security in ~/.dsh/settings.yaml), so the phone and the
+# desktop run the same agent.
+#
+# Config shape is the package's own: `default` is required (the preset id used
+# when a session names none), `roots` defaults to empty, and the harness-home
+# user root ($DSH_HOME/.agent-presets, where this preset is unpacked from
+# Documents) is scanned by default. All 23 plugin packages the preset's
+# agent.cordis.yml names were verified present in this image before enabling it.
+- insert:
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: security
+
+# tmux-context is off: it keeps a tmux server alive to describe the multiplexer
+# around the agent, which costs a resident process in a guest that iOS already
+# reclaims under memory pressure. Nothing here runs inside tmux.
+- id: tmux-context
+  disabled: true
