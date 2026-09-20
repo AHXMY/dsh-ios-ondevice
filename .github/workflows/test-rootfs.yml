@@ -1,0 +1,88 @@
+# 在云端跑上游的 guest 集成测试（tests/rootfs-test.sh）：
+# 它会把镜像 import 进 fakefs、在 iSH 里跑 dsh-selftest、dump web profile 配置、
+# 用 mock DeepSeek 跑一轮 headless 会话、最后**真的把 dsh-serve 起在 loopback 上
+# 探测 web UI**。这正是"手机上 web 服务起不来"要复现的那一步，而且不需要真机。
+#
+# 两个 job 并行：pinned（上游锁定的 0.1.0-rc.7）和 latest（0.1.5-rc.2）。
+
+name: test-rootfs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tag: pinned
+            dsh: pinned
+          - tag: latest
+            dsh: 0.1.5-rc.2
+
+    steps:
+      - name: 拉代码
+        uses: actions/checkout@v4
+
+      - name: 装构建工具
+        run: |
+          brew install lld meson ninja libarchive pkg-config
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          ld.lld --version
+          node -v
+
+      - name: 把 dsh 版本改成矩阵指定的那个（latest 用）
+        if: matrix.dsh != 'pinned'
+        env:
+          DSH_VERSION: ${{ matrix.dsh }}
+        run: |
+          echo "目标 dsh 版本: ${DSH_VERSION}"
+          node -e "const fs=require('fs');const p='rootfs/staging/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.dependencies['@deepseek-ai/dsh']=process.env.DSH_VERSION;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');console.log('pinned ->',j.dependencies)"
+          rm -f rootfs/staging/package-lock.json
+
+      - name: 编译 iSH + 构建 guest 镜像
+        env:
+          DSH_VERSION: ${{ matrix.dsh }}
+        run: |
+          if [ "$DSH_VERSION" = "pinned" ]; then unset DSH_VERSION; fi
+          make emulator
+          make rootfs
+          ls -lh build/root.tar.gz
+
+      - name: 跑 guest 集成测试（复现 web 服务起不起得来）
+        run: |
+          set +e
+          chmod +x tests/rootfs-test.sh
+          tests/rootfs-test.sh > test-output.txt 2>&1
+          CODE=$?
+          set -e
+          echo "rootfs-test exit code: $CODE"
+          echo "======== 测试输出 ========"
+          cat test-output.txt
+          echo "======== 输出结束 ========"
+          if [ "$CODE" -ne 0 ]; then
+            echo "======== dsh-serve 日志（如果有）========"
+            cat build/rootfs-test/dsh-serve.log 2>/dev/null | tail -n 120 || true
+            echo "======== 自检输出（如果有）========"
+            cat build/rootfs-test/sanity.txt 2>/dev/null || true
+            exit "$CODE"
+          fi
+
+      - name: 上传测试输出
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-test-${{ matrix.tag }}
+          path: |
+            test-output.txt
+            build/rootfs-test/dsh-serve.log
+            build/rootfs-test/sanity.txt
+            build/rootfs-test/config.yml
+          if-no-files-found: warn
+          retention-days: 14
