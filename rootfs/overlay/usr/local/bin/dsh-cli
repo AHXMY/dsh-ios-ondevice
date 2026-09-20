@@ -1,0 +1,123 @@
+#!/bin/sh
+# dsh-cli -- an interactive front door to the harness, built only from the
+# official package that already ships in this image.
+#
+# dsh publishes no terminal UI of its own: `--profile tui` exists only once a
+# third-party terminal app is installed, and this guest has no network to
+# install one. What it does publish is `--profile headless`, which answers one
+# task, prints the answer and exits -- and it takes `--resume <session-id>`.
+# Looping that with --resume turns the one-shot form into a multi-turn
+# conversation, with the same model, tools and safety defaults as the browser
+# surface, and nothing extra to keep in step with the upstream release.
+#
+# The terminal session this runs in is started by the app with nothing but TERM
+# in its environment (see TerminalViewController.startSession), so this script
+# has to establish PATH and HOME itself.
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HOME=/root
+DSH_HOME=${DSH_HOME:-/root/.dsh}
+WORKSPACE=${DSH_WORKSPACE:-/root/workspace}
+DSH_PKG=/usr/local/lib/node_modules/@deepseek-ai/dsh
+DSH_BIN=$DSH_PKG/lib/bin.js
+export PATH HOME DSH_HOME
+
+# iOS refuses the guest's own outbound connects, so the app runs a loopback
+# forwarder on the host and this points dsh at it. dsh accepts the base URL
+# only from the launching environment -- never from a .env file -- so it has to
+# be exported here. Override it to talk to a real endpoint instead.
+: "${DEEPSEEK_BASE_URL:=http://127.0.0.1:31337}"
+export DEEPSEEK_BASE_URL
+
+mkdir -p "$WORKSPACE" || exit 1
+cd "$WORKSPACE" || exit 1
+
+BOLD=$(printf '\033[1m')
+DIM=$(printf '\033[2m')
+CYAN=$(printf '\033[1;36m')
+GREEN=$(printf '\033[1;32m')
+RESET=$(printf '\033[0m')
+
+session=
+sessions_root="$DSH_HOME/sessions"
+
+# Cheap enough to run at startup: reading the version out of package.json does
+# not need a second Node boot, which under emulation costs seconds.
+version=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DSH_PKG/package.json" 2>/dev/null | head -n 1)
+
+newest_session() {
+	# dsh lays sessions out as <home>/sessions/<workspace-slug>/session-<uuid>.
+	# The slug is derived from the working directory, which is always the same
+	# here, but globbing one level deeper keeps this correct if it ever is not.
+	ls -1dt "$sessions_root"/*/session-* 2>/dev/null | head -n 1
+}
+
+usage() {
+	printf '%s\n' \
+		"  ${BOLD}<文字>${RESET}     交给 dsh 执行，之后的输入都会续接同一会话" \
+		"  ${BOLD}!<命令>${RESET}    执行一条 shell 命令，不进模型" \
+		"  ${BOLD}/new${RESET}       下一条消息开一个新会话" \
+		"  ${BOLD}/session${RESET}   显示当前会话 id" \
+		"  ${BOLD}/help${RESET}      显示这段说明" \
+		"  ${BOLD}exit${RESET}       退出（Ctrl-D 也行）"
+}
+
+printf '%s\n' \
+	"${GREEN}  dsh CLI${RESET}  ${DIM}官方 @deepseek-ai/dsh ${version}${RESET}" \
+	"${DIM}  形态：dsh --profile headless（一问一答，--resume 续接同一会话）${RESET}" \
+	"${DIM}  工作目录 ${WORKSPACE}${RESET}" \
+	"${DIM}  模型出口 ${DEEPSEEK_BASE_URL}${RESET}" \
+	""
+usage
+printf '\n'
+
+while :; do
+	printf '%s' "$CYAN"
+	printf 'dsh> '
+	printf '%s' "$RESET"
+	IFS= read -r line || break
+
+	# Trim, so a stray space is not mistaken for a task.
+	line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+	[ -n "$line" ] || continue
+
+	case "$line" in
+	exit | quit | :q)
+		break
+		;;
+	/help)
+		usage
+		continue
+		;;
+	/session)
+		if [ -n "$session" ]; then
+			printf '  %s\n' "$session"
+		else
+			printf '%s  （还没开始会话）%s\n' "$DIM" "$RESET"
+		fi
+		continue
+		;;
+	/new)
+		session=
+		printf '%s  （下一条消息会开一个新会话）%s\n' "$DIM" "$RESET"
+		continue
+		;;
+	'!'*)
+		sh -c "${line#!}"
+		continue
+		;;
+	esac
+
+	if [ -n "$session" ]; then
+		node --expose-internals "$DSH_BIN" --profile headless --resume "$session" "$line"
+	else
+		node --expose-internals "$DSH_BIN" --profile headless "$line"
+		if [ $? -eq 0 ]; then
+			session=$(basename "$(newest_session)")
+			[ -z "$session" ] || printf '%s  （会话 %s，之后的输入都会续接它）%s\n' "$DIM" "$session" "$RESET"
+		fi
+	fi
+	printf '\n'
+done
+
+printf '%s  dsh CLI 结束%s\n' "$DIM" "$RESET"

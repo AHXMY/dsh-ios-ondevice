@@ -15,6 +15,7 @@
 #import "DSHStartupMetrics.h"
 #import "DSHStatusOverlayView.h"
 #import "TerminalViewController.h"
+#import "UserPreferences.h"
 #import "AppDelegate.h"
 #import <WebKit/WebKit.h>
 
@@ -31,6 +32,12 @@ static NSString *const kDSHUserAgentSuffix = @" DSH-iOS/1.0";
 @property (nonatomic) UIButton *activityIndicatorButton;
 @property (nonatomic) UIButton *terminalButton;
 @property (nonatomic, nullable) TerminalViewController *terminalVC;
+/// The CLI terminal is a second, independent session: the plain shell and the
+/// harness CLI run different commands, and a session's command is read once,
+/// when it starts, so they cannot share one view controller.
+@property (nonatomic, nullable) TerminalViewController *cliTerminalVC;
+/// The harness's own terminal front door, a script in the guest.
+@property (nonatomic, copy) NSArray<NSString *> *cliCommand;
 @property (nonatomic) uint16_t loadedPort;
 @property (nonatomic) BOOL pageLoaded;
 @property (nonatomic) NSUInteger pageLoadGeneration;
@@ -43,6 +50,7 @@ static NSString *const kDSHUserAgentSuffix = @" DSH-iOS/1.0";
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor colorNamed:@"DSHBackground"] ?: UIColor.systemBackgroundColor;
     self.downloadDestinations = [NSMutableDictionary dictionary];
+    self.cliCommand = @[ @"/usr/local/bin/dsh-cli" ];
 
     [self buildWebView];
     [self buildControlBar];
@@ -183,6 +191,7 @@ static NSString *const kDSHUserAgentSuffix = @" DSH-iOS/1.0";
     __weak typeof(self) weakSelf = self;
     UIAction *reload = [UIAction actionWithTitle:@"Reload" image:[UIImage systemImageNamed:@"arrow.clockwise"] identifier:@"dsh.reload" handler:^(UIAction *a) { [weakSelf reloadWebView]; }];
     UIAction *terminal = [UIAction actionWithTitle:@"Terminal" image:[UIImage systemImageNamed:@"terminal"] identifier:@"dsh.terminal.menu" handler:^(UIAction *a) { [weakSelf presentTerminal]; }];
+    UIAction *cli = [UIAction actionWithTitle:@"dsh CLI" image:[UIImage systemImageNamed:@"chevron.left.forwardslash.chevron.right"] identifier:@"dsh.cli.menu" handler:^(UIAction *a) { [weakSelf presentCLI]; }];
     UIAction *capabilities = [UIAction actionWithTitle:@"Capabilities" image:[UIImage systemImageNamed:@"switch.2"] identifier:@"dsh.capabilities" handler:^(UIAction *a) { [weakSelf presentCapabilities]; }];
     UIAction *activity = [UIAction actionWithTitle:@"Activity" image:[UIImage systemImageNamed:@"list.bullet.rectangle"] identifier:@"dsh.activity" handler:^(UIAction *a) { [weakSelf presentActivity]; }];
     UIAction *log = [UIAction actionWithTitle:@"Server Log" image:[UIImage systemImageNamed:@"doc.text.magnifyingglass"] identifier:@"dsh.log" handler:^(UIAction *a) { [weakSelf presentLog]; }];
@@ -194,7 +203,7 @@ static NSString *const kDSHUserAgentSuffix = @" DSH-iOS/1.0";
         if (url) [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
     }];
     UIAction *about = [UIAction actionWithTitle:@"About DSH" image:[UIImage systemImageNamed:@"info.circle"] identifier:@"dsh.about" handler:^(UIAction *a) { [weakSelf presentAbout]; }];
-    NSMutableArray<UIMenuElement *> *children = [NSMutableArray arrayWithObjects:reload, terminal, nil];
+    NSMutableArray<UIMenuElement *> *children = [NSMutableArray arrayWithObjects:reload, cli, terminal, nil];
     [children addObjectsFromArray:@[capabilities, activity, log, [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[safari, restart, repair]], about]];
     return [UIMenu menuWithChildren:children];
 }
@@ -347,20 +356,55 @@ static NSString *const kDSHUserAgentSuffix = @" DSH-iOS/1.0";
 }
 
 - (void)presentTerminal {
+    [self presentTerminal:self.terminalVC creating:^TerminalViewController * {
+        // "Init Command" is iSH's own preference; respect whatever the user set.
+        return [self terminalViewControllerRunning:nil];
+    } cache:^(TerminalViewController *vc) { self.terminalVC = vc; }];
+}
+
+/// Opens the harness CLI: a terminal session running the guest's `dsh-cli`,
+/// which loops dsh's official one-shot form (`--profile headless --resume`)
+/// into a continuous conversation. Same agent, tools and credentials as the
+/// browser surface, without the web server, its plugin bundles or the health
+/// checks -- the parts that are expensive to run under emulation.
+- (void)presentCLI {
+    [self presentTerminal:self.cliTerminalVC creating:^TerminalViewController * {
+        return [self terminalViewControllerRunning:self.cliCommand];
+    } cache:^(TerminalViewController *vc) { self.cliTerminalVC = vc; }];
+}
+
+- (void)presentTerminal:(TerminalViewController *)existing
+               creating:(TerminalViewController * (^)(void))create
+                  cache:(void (^)(TerminalViewController *))cache {
     // iSH's terminal offers to "install the built-in APK" on first use; our
     // guest ships with apk already, so skip that startup message.
     [NSUserDefaults.standardUserDefaults setInteger:1 forKey:@"Skip Startup Message"];
-    if (self.terminalVC == nil) {
-        UIStoryboard *sb = [UIStoryboard storyboardWithName:@"Terminal" bundle:nil];
-        TerminalViewController *vc = [sb instantiateInitialViewController];
-        vc.sceneSession = nil; // never let a shell exit tear down our scene
-        vc.modalPresentationStyle = UIModalPresentationPageSheet;
-        [vc startNewSession];
-        self.terminalVC = vc;
+    TerminalViewController *vc = existing;
+    if (vc == nil) {
+        vc = create();
+        cache(vc);
     }
-    if (self.terminalVC.presentingViewController != nil)
+    if (vc.presentingViewController != nil)
         return;
-    [self presentViewController:self.terminalVC animated:YES completion:nil];
+    [self presentViewController:vc animated:YES completion:nil];
+}
+
+/// Builds a terminal whose session runs `command`, or the "Init Command"
+/// preference when `command` is nil. The command is read once, by
+/// -[TerminalViewController startSession], so it is restored immediately after
+/// the session starts and nothing else in the app sees the swap.
+- (TerminalViewController *)terminalViewControllerRunning:(NSArray<NSString *> *)command {
+    NSArray<NSString *> *previous = UserPreferences.shared.launchCommand;
+    if (command != nil)
+        UserPreferences.shared.launchCommand = command;
+    UIStoryboard *sb = [UIStoryboard storyboardWithName:@"Terminal" bundle:nil];
+    TerminalViewController *vc = [sb instantiateInitialViewController];
+    vc.sceneSession = nil; // never let a shell exit tear down our scene
+    vc.modalPresentationStyle = UIModalPresentationPageSheet;
+    [vc startNewSession];
+    if (command != nil)
+        UserPreferences.shared.launchCommand = previous;
+    return vc;
 }
 
 - (void)presentLog {

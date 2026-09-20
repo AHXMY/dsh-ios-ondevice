@@ -1,13 +1,22 @@
 # Point dsh at the host-side model forwarder when we are running inside the
-# DSH iOS app. The guest's own sockets cannot leave the sandbox on iOS, so the
-# app listens on 127.0.0.1:31337 and reaches the API through its own network.
+# DSH iOS app.
 #
-# dsh only accepts the base-URL variable from the launching environment (see
-# BOOTSTRAP_NAMES in @deepseek-ai/dsh-app-boot), never from a .env file, so a
-# shell started in the app's terminal has to export it like this. The host
-# bridge variables are set by the app and by nothing else, which is how this
-# stays inert in a plain CLI emulator or in the CI rootfs test.
-if [ -n "$DSH_HOST_BRIDGE_URL" ] && [ -z "$DEEPSEEK_BASE_URL" ]; then
+# iOS refuses the guest's own outbound connects, so the app listens on
+# 127.0.0.1:31337 and reaches the API through its own network. dsh accepts the
+# base-URL variable only from the launching environment (see BOOTSTRAP_NAMES in
+# @deepseek-ai/dsh-app-boot), never from a .env file, so a shell needs to export
+# it like this.
+#
+# There is no environment marker to test: the app starts terminal sessions with
+# nothing but TERM (TerminalViewController.startSession). The forwarder being
+# reachable on loopback is the signal instead -- outside the app nothing is
+# listening there, and the probe just fails and this file does nothing.
+#
+# `dsh-cli` exports the same value itself; this exists so a hand-typed `dsh`
+# works too.
+if [ -z "$DEEPSEEK_BASE_URL" ] &&
+	command -v curl >/dev/null 2>&1 &&
+	curl -s -o /dev/null -m 1 "http://127.0.0.1:31337/" 2>/dev/null; then
 	DEEPSEEK_BASE_URL=http://127.0.0.1:31337
 	export DEEPSEEK_BASE_URL
 fi
