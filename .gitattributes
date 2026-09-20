@@ -4,3 +4,9 @@
 # checking-out machine's core.autocrlf.
 *.sh text eol=lf
 .env text eol=lf
+
+# The guest-side launchers have no extension, so *.sh does not cover them. These
+# are the files the app execs: a CRLF here turns the shebang into
+# "#!/bin/sh\r" and the whole app stops booting. Same rule, named explicitly.
+/rootfs/overlay/usr/local/bin/* text eol=lf
+/rootfs/overlay/usr/local/share/dsh/*.yml text eol=lf
