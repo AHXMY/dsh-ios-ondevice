@@ -59,7 +59,7 @@ rm -rf stage && mkdir stage
 cp "$ROOT/rootfs/staging/package.json" stage/
 [ -f "$ROOT/rootfs/staging/package-lock.json" ] && cp "$ROOT/rootfs/staging/package-lock.json" stage/
 ( cd stage && npm ci --os=linux --cpu=arm64 --libc=musl --ignore-scripts --no-audit --no-fund 2>&1 | tail -3 \
-  || npm install "@deepseek-ai/dsh@${DSH_VERSION}" --os=linux --cpu=arm64 --libc=musl --ignore-scripts --no-audit --no-fund )
+  || npm install --os=linux --cpu=arm64 --libc=musl --ignore-scripts --no-audit --no-fund )
 cp stage/package-lock.json "$ROOT/rootfs/staging/package-lock.json"
 
 log "Guest phase 1: packages"
@@ -118,26 +118,47 @@ node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js 
 install -m 0644 /usr/local/share/dsh/cordis.patch.yml /root/.dsh/profiles/web/cordis.patch.yml
 # The interactive terminal surface. dsh ships no terminal app of its own -- the
 # repository removed @deepseek-ai/dsh-tui on 2026-08-04 -- so the terminal is an
-# out-of-tree profile bundle, and a non-template profile may only be created
-# through `dsh plugin`, which scaffolds the directory and installs the bundle
-# the way the loader resolves it (profiles/node_modules, a hoisted workspace).
-# This has to happen here: the guest has network during the build because the
-# emulator's sockets pass through to the runner, and none at all on the device.
-# dsh plugin forwards to pnpm, which is not part of the base image.
-corepack enable >/dev/null 2>&1 || npm install -g pnpm >/dev/null 2>&1 || true
-node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
-    plugin --profile tui add "$DSH_TUI_PACKAGE" 2>&1 | tail -5
-test -f /root/.dsh/profiles/tui/package.json || {
-    echo "error: dsh plugin --profile tui add $DSH_TUI_PACKAGE left no profile" >&2
-    exit 1
+# out-of-tree profile bundle, installed into the guest's global node_modules by
+# the staging step above.
+#
+# The profile directory is written here rather than created with
+# `dsh plugin --profile tui add`: that forwards to pnpm, which means installing
+# the package a second time inside the emulator over the guest's network. A
+# first attempt at it sat on this step for 37 minutes (against a 5.6-minute
+# baseline for the whole rootfs build) and had to be cancelled. Nothing about
+# the profile needs a package manager -- `dsh plugin` produces exactly this
+# package.json plus the bundle in the profile's node_modules, and dsh's own
+# bootstrap generates the resolution shims for whatever the bundles name.
+mkdir -p /root/.dsh/profiles/tui
+cat > /root/.dsh/profiles/tui/package.json <<'TUI_PROFILE_EOF'
+{
+  "name": "dsh-profile-tui",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@ccchimneyyy/dsh-tui"
+      ],
+      "patchReload": "startup"
+    }
+  }
 }
+TUI_PROFILE_EOF
 install -m 0644 /usr/local/share/dsh/tui.patch.yml /root/.dsh/profiles/tui/cordis.patch.yml
+# Compose it once here so a broken bundle fails the build, not first launch on a
+# device with no way to install anything.
 node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
     --profile tui --dump-config >/dev/null || {
     echo "error: the tui profile does not compose" >&2
     exit 1
 }
-echo "tui profile: \$(node -e 'const p=require("/root/.dsh/profiles/tui/package.json");console.log(p.dsh.profile.bundles.join(", "))')"
+test -e /root/.dsh/profiles/node_modules/@ccchimneyyy/dsh-tui || {
+    echo "error: the tui bundle is not resolvable from the profile" >&2
+    exit 1
+}
+echo "tui profile ok"
 # Home-level layer: applies to every profile (see rootfs/overlay/.../home.patch.yml).
 install -m 0644 /usr/local/share/dsh/home.patch.yml /root/.dsh/cordis.patch.yml
 mkdir -p /root/workspace
