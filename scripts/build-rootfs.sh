@@ -73,10 +73,20 @@ rm -rf fakefs
 log "Stage dsh node_modules on the host (linux/arm64/musl)"
 rm -rf stage && mkdir stage
 cp "$ROOT/rootfs/staging/package.json" stage/
-[ -f "$ROOT/rootfs/staging/package-lock.json" ] && cp "$ROOT/rootfs/staging/package-lock.json" stage/
-( cd stage && npm ci --os=linux --cpu=arm64 --libc=musl --ignore-scripts --no-audit --no-fund 2>&1 | tail -3 \
-  || npm install --os=linux --cpu=arm64 --libc=musl --ignore-scripts --no-audit --no-fund )
-cp stage/package-lock.json "$ROOT/rootfs/staging/package-lock.json"
+# Install from the manifest only, with peer dependencies unenforced.
+#
+# There is no usable lockfile: the out-of-tree terminal app declares peers on
+# @deepseek-ai/* versions that the published dsh tree does not carry -- those
+# packages sit on independent version lines (dsh-llm ships 0.0.1-rc.x, the app
+# peers on ^0.1.5-rc.1), so npm refuses to resolve at all:
+#   npm error Conflicting peer dependency: @deepseek-ai/dsh-llm@0.1.5-rc.2
+# --legacy-peer-deps accepts the declared graph without enforcing it, and whether
+# the app truly runs against this tree is decided by the `--profile tui
+# --dump-config` check in guest phase 3 -- evidence, not a declaration. The size
+# a looser resolution would otherwise add is pruned below, so the image stays
+# deterministic.
+( cd stage && npm install --os=linux --cpu=arm64 --libc=musl --ignore-scripts \
+    --no-audit --no-fund --legacy-peer-deps 2>&1 | tail -3 )
 
 log "Guest phase 1: packages"
 guest_phase "guest phase 1" "DSH-PHASE1-OK" <<'EOF'
