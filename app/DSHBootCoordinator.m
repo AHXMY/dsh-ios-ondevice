@@ -57,8 +57,29 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
         _queue = dispatch_queue_create("app.dsh.boot", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
         _statusMessage = @"正在准备 Linux 环境…";
         _progress = -1;
+        // The guest is told one base URL and keeps using it. If the forwarder
+        // ever re-arms on a different port, the environment file the guest's
+        // shells read has to be rewritten, or every request keeps going to the
+        // port that went away -- which is indistinguishable, from the terminal,
+        // from the app being dead.
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                              selector:@selector(modelForwarderPortDidChange:)
+                                                  name:DSHModelForwarderPortDidChangeNotification
+                                                object:nil];
     }
     return self;
+}
+
+- (void)modelForwarderPortDidChange:(NSNotification *)notification {
+    NSMutableDictionary *env = [DSHHarness.shared.extraEnvironment mutableCopy];
+    if (env == nil)
+        env = [NSMutableDictionary dictionary];
+    [env addEntriesFromDictionary:DSHModelForwarder.shared.guestEnvironment];
+    DSHHarness.shared.extraEnvironment = env;
+    [self writeGuestShellEnvironment:env];
+    [DSHHarness.shared.log append:[NSString stringWithFormat:
+        @"[dsh-ios] guest environment rewritten for the new model port (%@)",
+        DSHModelForwarder.shared.baseURLString ?: @"(none)"]];
 }
 
 - (void)setPhase:(DSHBootPhase)phase message:(NSString *)message progress:(double)progress {
@@ -131,8 +152,7 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
 - (void)finishReady {
     // The host bridge must be listening before dsh-serve starts: its URL and
     // token reach the guest through the server's environment.
-    DSHHostBridge *bridge = DSHHostBridge.shared;
-    [DSHDeviceCapability installOn:bridge];
+    DSHHostBridge *bridge = DSHHostBridge.shared;    [DSHDeviceCapability installOn:bridge];
     [DSHEventKitCapability installOn:bridge];
     [DSHHealthCapability installOn:bridge];
     [DSHLocationCapability installOn:bridge];

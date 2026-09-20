@@ -130,6 +130,19 @@ NSNotificationName const DSHLogBufferDidChangeNotification = @"DSHLogBufferDidCh
             NSTimeInterval elapsed = -self.startedAt.timeIntervalSinceNow;
             NSString *record = [NSString stringWithFormat:@"+%8.3fs %@\n", elapsed, line];
             [self.persistentHandle writeData:[record dataUsingEncoding:NSUTF8StringEncoding]];
+            // Flush what the app itself reports, every line.
+            //
+            // Diagnostics are the only witness to this app's failures: the guest
+            // keeps running while the app's sockets are gone, so there is no
+            // crash report and nothing in the session log. Leaving those lines in
+            // the file handle's buffer made them unreadable over USB until some
+            // other code path happened to synchronise -- which read exactly like
+            // "the app never logged anything", and cost a whole round of
+            // diagnosis. `[dsh-ios]` is this app's own tag; guest traffic echoes
+            // (`[bridge]`, session lines) stays buffered because it is high
+            // volume and not the thing under investigation.
+            if ([line hasPrefix:@"[dsh-ios]"])
+                [self.persistentHandle synchronizeFile];
         }
         if (self.notifyPending)
             return;
