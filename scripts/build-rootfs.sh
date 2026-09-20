@@ -60,7 +60,12 @@ cp stage/package-lock.json "$ROOT/rootfs/staging/package-lock.json"
 log "Guest phase 1: packages"
 ish <<'EOF'
 set -e
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
+# DNS baked into the shipped image. 8.8.8.8 / 1.1.1.1 are commonly blackholed
+# on mainland-China networks, and a guest whose DNS never answers makes every
+# model request fail with "DeepSeek API request ... failed" while the app UI
+# itself looks fine. Put reachable resolvers first; keep 1.1.1.1 last.
+echo "nameserver 223.5.5.5" > /etc/resolv.conf
+echo "nameserver 119.29.29.29" >> /etc/resolv.conf
 echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 apk update >/dev/null
 apk add --no-progress nodejs npm nodejs-dev python3 make g++ bash git curl openssh-client ca-certificates 2>&1 | tail -1
