@@ -1,0 +1,302 @@
+[
+ [
+  "\t\tdescription: \"Move cursor up\"",
+  "\t\tdescription: \"光标上移\""
+ ],
+ [
+  "\t\tdescription: \"Move cursor down\"",
+  "\t\tdescription: \"光标下移\""
+ ],
+ [
+  "\t\tdescription: \"Select previous prompt history entry\"",
+  "\t\tdescription: \"上一条输入历史\""
+ ],
+ [
+  "\t\tdescription: \"Select next prompt history entry\"",
+  "\t\tdescription: \"下一条输入历史\""
+ ],
+ [
+  "\t\tdescription: \"Move cursor left\"",
+  "\t\tdescription: \"光标左移\""
+ ],
+ [
+  "\t\tdescription: \"Move cursor right\"",
+  "\t\tdescription: \"光标右移\""
+ ],
+ [
+  "\t\tdescription: \"Move cursor word left\"",
+  "\t\tdescription: \"光标左移一个词\""
+ ],
+ [
+  "\t\tdescription: \"Move cursor word right\"",
+  "\t\tdescription: \"光标右移一个词\""
+ ],
+ [
+  "\t\tdescription: \"Move to line start\"",
+  "\t\tdescription: \"移到行首\""
+ ],
+ [
+  "\t\tdescription: \"Move to line end\"",
+  "\t\tdescription: \"移到行尾\""
+ ],
+ [
+  "\t\tdescription: \"Jump forward to character\"",
+  "\t\tdescription: \"向前跳到字符\""
+ ],
+ [
+  "\t\tdescription: \"Jump backward to character\"",
+  "\t\tdescription: \"向后跳到字符\""
+ ],
+ [
+  "\t\tdescription: \"Page up\"",
+  "\t\tdescription: \"上翻一页\""
+ ],
+ [
+  "\t\tdescription: \"Page down\"",
+  "\t\tdescription: \"下翻一页\""
+ ],
+ [
+  "\t\tdescription: \"Delete character backward\"",
+  "\t\tdescription: \"删除前一个字符\""
+ ],
+ [
+  "\t\tdescription: \"Delete character forward\"",
+  "\t\tdescription: \"删除后一个字符\""
+ ],
+ [
+  "\t\tdescription: \"Delete word backward\"",
+  "\t\tdescription: \"删除前一个词\""
+ ],
+ [
+  "\t\tdescription: \"Delete word forward\"",
+  "\t\tdescription: \"删除后一个词\""
+ ],
+ [
+  "\t\tdescription: \"Delete to line start\"",
+  "\t\tdescription: \"删到行首\""
+ ],
+ [
+  "\t\tdescription: \"Delete to line end\"",
+  "\t\tdescription: \"删到行尾\""
+ ],
+ [
+  "\t\tdescription: \"Yank\"",
+  "\t\tdescription: \"粘贴\""
+ ],
+ [
+  "\t\tdescription: \"Yank pop\"",
+  "\t\tdescription: \"换成更早的粘贴\""
+ ],
+ [
+  "\t\tdescription: \"Undo\"",
+  "\t\tdescription: \"撤销\""
+ ],
+ [
+  "\t\tdescription: \"Insert newline\"",
+  "\t\tdescription: \"插入换行\""
+ ],
+ [
+  "\t\tdescription: \"Submit input\"",
+  "\t\tdescription: \"发送\""
+ ],
+ [
+  "\t\tdescription: \"Tab / autocomplete\"",
+  "\t\tdescription: \"Tab / 自动补全\""
+ ],
+ [
+  "\t\tdescription: \"Copy selection\"",
+  "\t\tdescription: \"复制选中\""
+ ],
+ [
+  "\t\tdescription: \"Move selection up\"",
+  "\t\tdescription: \"选中上移\""
+ ],
+ [
+  "\t\tdescription: \"Move selection down\"",
+  "\t\tdescription: \"选中下移\""
+ ],
+ [
+  "\t\tdescription: \"Selection page up\"",
+  "\t\tdescription: \"选中区上翻页\""
+ ],
+ [
+  "\t\tdescription: \"Selection page down\"",
+  "\t\tdescription: \"选中区下翻页\""
+ ],
+ [
+  "\t\tdescription: \"Confirm selection\"",
+  "\t\tdescription: \"确认选择\""
+ ],
+ [
+  "\t\tdescription: \"Cancel selection\"",
+  "\t\tdescription: \"取消选择\""
+ ],
+ [
+  "\t\tdescription: \"Scroll viewport up one page\"",
+  "\t\tdescription: \"视图上翻一页\""
+ ],
+ [
+  "\t\tdescription: \"Scroll viewport down one page\"",
+  "\t\tdescription: \"视图下翻一页\""
+ ],
+ [
+  "\t\tdescription: \"Scroll viewport up half a page\"",
+  "\t\tdescription: \"视图上翻半页\""
+ ],
+ [
+  "\t\tdescription: \"Scroll viewport down half a page\"",
+  "\t\tdescription: \"视图下翻半页\""
+ ],
+ [
+  "\t\tdescription: \"Scroll viewport up one line\"",
+  "\t\tdescription: \"视图上滚一行\""
+ ],
+ [
+  "\t\tdescription: \"Scroll viewport down one line\"",
+  "\t\tdescription: \"视图下滚一行\""
+ ],
+ [
+  "\t\tdescription: \"Jump to previous semantic prompt\"",
+  "\t\tdescription: \"跳到上一条提问\""
+ ],
+ [
+  "\t\tdescription: \"Jump to next semantic prompt\"",
+  "\t\tdescription: \"跳到下一条提问\""
+ ],
+ [
+  "\t\tdescription: \"Search the primary scroll view\"",
+  "\t\tdescription: \"搜索当前视图\""
+ ],
+ [
+  "\t\tdescription: \"Select the next search match\"",
+  "\t\tdescription: \"下一个匹配\""
+ ],
+ [
+  "\t\tdescription: \"Select the previous search match\"",
+  "\t\tdescription: \"上一个匹配\""
+ ],
+ [
+  "\t\tdescription: \"Close transcript search\"",
+  "\t\tdescription: \"关闭搜索\""
+ ],
+ [
+  "\t\tdescription: \"Scroll viewport to top\"",
+  "\t\tdescription: \"跳到顶部\""
+ ],
+ [
+  "\t\tdescription: \"Scroll viewport to bottom\"",
+  "\t\tdescription: \"跳到底部\""
+ ],
+ [
+  "\t\tplaceholder: \"Find in transcript\",",
+  "\t\tplaceholder: \"在记录中查找\","
+ ],
+ [
+  "const DEFAULT_INPUT_PLACEHOLDER = \"press enter to steer and esc to cancel\";",
+  "const DEFAULT_INPUT_PLACEHOLDER = \"回车发送 · Esc 取消\";"
+ ],
+ [
+  "\t\t\tlabel: \"Tool cards\",",
+  "\t\t\tlabel: \"工具卡片\","
+ ],
+ [
+  "\t\t\tlabel: \"Reasoning\",",
+  "\t\t\tlabel: \"思考过程\","
+ ],
+ [
+  "\t\ttitle: \"Unreadable session\",",
+  "\t\ttitle: \"会话无法读取\","
+ ],
+ [
+  "\t\t\ttitle: \"Timing\",",
+  "\t\t\ttitle: \"计时\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"Wait\",",
+  "\t\t\t\t\tlabel: \"等待\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"Think\",",
+  "\t\t\t\t\tlabel: \"思考\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"Resp\",",
+  "\t\t\t\t\tlabel: \"回复\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"Tools\",",
+  "\t\t\t\t\tlabel: \"工具\","
+ ],
+ [
+  "\t\t\ttitle: \"Tokens\",",
+  "\t\t\ttitle: \"用量\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"↑In\",",
+  "\t\t\t\t\tlabel: \"↑输入\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"↓Out\",",
+  "\t\t\t\t\tlabel: \"↓输出\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"Cache\",",
+  "\t\t\t\t\tlabel: \"缓存\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"TP\",",
+  "\t\t\t\t\tlabel: \"吞吐\","
+ ],
+ [
+  "\t\t\ttitle: \"Context\",",
+  "\t\t\ttitle: \"上下文\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"CWD\",",
+  "\t\t\t\t\tlabel: \"目录\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"Branch\",",
+  "\t\t\t\t\tlabel: \"分支\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"Session ID\",",
+  "\t\t\t\t\tlabel: \"会话\","
+ ],
+ [
+  "\t\t\t\t\tlabel: \"Model\",",
+  "\t\t\t\t\tlabel: \"模型\","
+ ],
+ [
+  "\t\t\t\t\tvalue: displayText(target.current === void 0 ? \"model unset\" : compactTargetLabel(target.current))",
+  "\t\t\t\t\tvalue: displayText(target.current === void 0 ? \"未设置模型\" : compactTargetLabel(target.current))"
+ ],
+ [
+  "\t\tmodelValue.set(`  ${palette.dim(displayText(target.current === void 0 ? \"model unset\" : compactTargetLabel(target.current)))}`);",
+  "\t\tmodelValue.set(`  ${palette.dim(displayText(target.current === void 0 ? \"未设置模型\" : compactTargetLabel(target.current)))}`);"
+ ],
+ [
+  "\t\ttokenValue.set(`  ${palette.dim(rate === void 0 ? usage : `${usage}  cache ${rate}%`)}`);",
+  "\t\ttokenValue.set(`  ${palette.dim(rate === void 0 ? usage : `${usage}  缓存 ${rate}%`)}`);"
+ ],
+ [
+  "\t\t\tdescription: \"Show keyboard shortcuts and commands\",",
+  "\t\t\tdescription: \"显示快捷键与命令\","
+ ],
+ [
+  "\t\t\tdescription: \"Show or switch this session's model\",",
+  "\t\t\tdescription: \"查看 / 切换本会话模型\","
+ ],
+ [
+  "\t\t\tdescription: \"List this workspace's resumable sessions\",",
+  "\t\t\tdescription: \"列出可恢复的会话\","
+ ],
+ [
+  "\t\t\tdescription: \"Exit after the active turn reaches idle\",",
+  "\t\t\tdescription: \"本轮结束后退出\","
+ ],
+ [
+  "\t\t\tdescription: \"Exit after the active turn reaches idle\",",
+  "\t\t\tdescription: \"本轮结束后退出\","
+ ]
+]
