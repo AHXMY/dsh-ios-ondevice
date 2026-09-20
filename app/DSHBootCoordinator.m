@@ -55,7 +55,7 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
         // Serial and high priority: the whole guest lives on this thread until
         // init is started, and the user is staring at a spinner meanwhile.
         _queue = dispatch_queue_create("app.dsh.boot", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
-        _statusMessage = @"Preparing the Linux environment…";
+        _statusMessage = @"正在准备 Linux 环境…";
         _progress = -1;
     }
     return self;
@@ -77,7 +77,7 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
     self.started = YES;
     [DSHStartupMetrics.shared beginLaunch];
     [DSHHarness.shared.log append:@"[perf] app boot coordinator started"];
-    [self setPhase:DSHBootPhaseImportingImage message:@"Preparing the Linux environment…" progress:-1];
+    [self setPhase:DSHBootPhaseImportingImage message:@"正在准备 Linux 环境…" progress:-1];
     // UIApplication is main-thread-only; grab the delegate here, not on the queue.
     AppDelegate *app = (AppDelegate *) UIApplication.sharedApplication.delegate;
 
@@ -88,7 +88,7 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
         DSHRootUpgrader *upgrader = DSHRootUpgrader.shared;
         [upgrader prepareRootsBeforeBootWithProgress:^(double fraction, NSString *message) {
             [self setPhase:DSHBootPhaseImportingImage
-                   message:message.length ? message : @"Installing the Linux image…"
+                   message:message.length ? message : @"正在安装 Linux 镜像…"
                   progress:fraction];
         }];
         NSTimeInterval imported = -t0.timeIntervalSinceNow;
@@ -96,7 +96,7 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
         [DSHStartupMetrics.shared mark:@"image_ready"];
 
         // 2. Boot the emulator kernel (mount the fakefs, start init).
-        [self setPhase:DSHBootPhaseBootingKernel message:@"Booting the Linux guest…" progress:-1];
+        [self setPhase:DSHBootPhaseBootingKernel message:@"正在启动 Linux 客户机…" progress:-1];
         int err = [app boot];
         NSTimeInterval kernelBoot = -t0.timeIntervalSinceNow - imported;
         [DSHHarness.shared.log append:[NSString stringWithFormat:@"[perf] guest kernel boot %.3fs", kernelBoot]];
@@ -107,7 +107,7 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
                                        imported, -t0.timeIntervalSinceNow]];
         if (err < 0) {
             [self setPhase:DSHBootPhaseFailed
-                   message:[NSString stringWithFormat:@"The Linux guest failed to boot (error %d).", err]
+                   message:[NSString stringWithFormat:@"Linux 客户机启动失败（错误 %d）。", err]
                   progress:-1];
             return;
         }
@@ -115,7 +115,7 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
         // 3. Migrate user data from a previous root, then let the harness run.
         dispatch_async(dispatch_get_main_queue(), ^{
             if (upgrader.pendingMigrationRoot != nil) {
-                [self setPhase:DSHBootPhaseMigratingData message:@"Moving your sessions to the new image…" progress:-1];
+                [self setPhase:DSHBootPhaseMigratingData message:@"正在把会话迁移到新镜像…" progress:-1];
                 [upgrader migrateIfNeededWithCompletion:^(BOOL migrated, NSError *error) {
                     if (error)
                         [DSHHarness.shared.log append:[NSString stringWithFormat:@"[dsh-ios] migration problem: %@", error.localizedDescription]];
@@ -169,9 +169,9 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
     // dsh-serve here would only spend the guest's CPU on a server no part of
     // this app ever connects to.
     [DSHHarness.shared.log append:@"[dsh-ios] CLI-only build: no dsh-serve to start"];
-    [self setPhase:DSHBootPhaseReady message:@"Starting the harness CLI…" progress:-1];
+    [self setPhase:DSHBootPhaseReady message:@"正在启动 harness 终端…" progress:-1];
 #else
-    [self setPhase:DSHBootPhaseReady message:@"Starting DeepSeek Harness…" progress:-1];
+    [self setPhase:DSHBootPhaseReady message:@"正在启动 DeepSeek Harness…" progress:-1];
     [DSHHarness.shared start];
 #endif
 }

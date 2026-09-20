@@ -24,17 +24,41 @@
 
     UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
     spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    spinner.color = self.view.tintColor;
     [spinner startAnimating];
+
+    // A titled screen instead of a bare sentence: this is what the user looks at
+    // while the guest image is imported and ~250 plugin packages load, so it says
+    // what the app is, what it is doing right now, and what it is made of.
+    UILabel *title = [UILabel new];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.textAlignment = NSTextAlignmentCenter;
+    title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
+    title.adjustsFontForContentSizeCategory = YES;
+    title.text = @"DSH TUI";
 
     UILabel *label = [UILabel new];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.textAlignment = NSTextAlignmentCenter;
     label.numberOfLines = 0;
-    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     label.textColor = UIColor.secondaryLabelColor;
-    label.text = @"Preparing the Linux environment…";
+    label.text = @"正在准备 Linux 环境…";
 
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[ spinner, label ]];
+    UILabel *footer = [UILabel new];
+    footer.translatesAutoresizingMaskIntoConstraints = NO;
+    footer.textAlignment = NSTextAlignmentCenter;
+    footer.numberOfLines = 0;
+    footer.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    footer.textColor = UIColor.tertiaryLabelColor;
+    footer.text = @"原版 DeepSeek Harness · 终端界面\n模型 deepseek-flash · 推理 max";
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[ spinner, title, label, footer ]];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 12;
+    [stack setCustomSpacing:28 afterView:label];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     stack.axis = UILayoutConstraintAxisVertical;
     stack.alignment = UIStackViewAlignmentCenter;
@@ -78,7 +102,7 @@
         case DSHBootPhaseFailed:
             [self.spinner stopAnimating];
             self.statusLabel.textColor = UIColor.systemRedColor;
-            self.statusLabel.text = message.length ? message : @"The Linux guest failed to boot.";
+            self.statusLabel.text = message.length ? message : @"Linux 客户机启动失败。";
             return;
         case DSHBootPhaseReady:
             [self handOffToTerminal];
