@@ -73,20 +73,26 @@ rm -rf fakefs
 log "Stage dsh node_modules on the host (linux/arm64/musl)"
 rm -rf stage && mkdir stage
 cp "$ROOT/rootfs/staging/package.json" stage/
-# Install from the manifest only, with peer dependencies unenforced.
+# Install from the manifest with peer resolution kept ON.
 #
-# There is no usable lockfile: the out-of-tree terminal app declares peers on
-# @deepseek-ai/* versions that the published dsh tree does not carry -- those
-# packages sit on independent version lines (dsh-llm ships 0.0.1-rc.x, the app
-# peers on ^0.1.5-rc.1), so npm refuses to resolve at all:
+# The whole @deepseek-ai tree is wired through peerDependencies -- nearly every
+# package declares its siblings as peers, and npm's automatic peer installation
+# is what actually pulls them in. --legacy-peer-deps turns that off and the tree
+# comes up short (guest phase 3 died on
+#   Cannot find package '@deepseek-ai/cordis-plugin-group').
+#
+# A lockfile cannot be used either: the out-of-tree terminal app declares peers
+# on @deepseek-ai/* versions the published tree does not carry (its packages sit
+# on independent version lines -- dsh-llm ships 0.0.1-rc.x while the app peers on
+# ^0.1.5-rc.1), so a plain install refuses to resolve:
 #   npm error Conflicting peer dependency: @deepseek-ai/dsh-llm@0.1.5-rc.2
-# --legacy-peer-deps accepts the declared graph without enforcing it, and whether
-# the app truly runs against this tree is decided by the `--profile tui
-# --dump-config` check in guest phase 3 -- evidence, not a declaration. The size
-# a looser resolution would otherwise add is pruned below, so the image stays
-# deterministic.
+# --force resolves it the other way: it keeps installing peers, and nests the
+# conflicting version under the package that asked for it, which is exactly what
+# the app needs. Whether the app truly runs against this tree is then decided by
+# the `--profile tui --dump-config` check in guest phase 3 -- evidence, not a
+# declaration. Whatever the looser resolution adds in size is pruned below.
 ( cd stage && npm install --os=linux --cpu=arm64 --libc=musl --ignore-scripts \
-    --no-audit --no-fund --legacy-peer-deps 2>&1 | tail -3 )
+    --no-audit --no-fund --force 2>&1 | tail -3 )
 
 log "Guest phase 1: packages"
 guest_phase "guest phase 1" "DSH-PHASE1-OK" <<'EOF'
