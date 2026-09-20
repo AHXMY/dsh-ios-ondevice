@@ -20,7 +20,8 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
 @property (nonatomic) int listenFD;
 @property (nonatomic) uint16_t port;
 @property (nonatomic) BOOL running;
-@property (nonatomic, strong) dispatch_queue_t queue;
+@property (nonatomic, strong) dispatch_queue_t acceptQueue;
+@property (nonatomic, strong) dispatch_queue_t workQueue;
 @property (nonatomic, strong) dispatch_source_t acceptSource;
 @property (nonatomic, strong, readwrite) NSString *upstream;
 @property (nonatomic, strong) NSURLSession *session;
@@ -39,7 +40,11 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
     self = [super init];
     if (self) {
         _listenFD = -1;
-        _queue = dispatch_queue_create("dsh.model-forwarder", DISPATCH_QUEUE_SERIAL);
+        _acceptQueue = dispatch_queue_create("dsh.model-forwarder.accept", DISPATCH_QUEUE_SERIAL);
+        // Connections run on a concurrent queue: a request that is still being
+        // read must never hold up the accept handler, or the listener stops
+        // taking new work while one slow client sits there.
+        _workQueue = dispatch_queue_create("dsh.model-forwarder.work", DISPATCH_QUEUE_CONCURRENT);
         NSString *override = NSProcessInfo.processInfo.environment[@"DSH_FORWARD_UPSTREAM"];
         _upstream = override.length > 0 ? override : @"https://api.deepseek.com";
         NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
@@ -82,7 +87,7 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
         self.listenFD = fd;
 
         __weak typeof(self) weakSelf = self;
-        self.acceptSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, fd, 0, self.queue);
+        self.acceptSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, fd, 0, self.acceptQueue);
         dispatch_source_set_event_handler(self.acceptSource, ^{ [weakSelf acceptOne]; });
         dispatch_resume(self.acceptSource);
         self.running = YES;
@@ -130,7 +135,7 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
     struct timeval tv = { .tv_sec = (int) kForwardTimeout };
     setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    dispatch_async(self.queue, ^{ [self serveConnection:client]; });
+    dispatch_async(self.workQueue, ^{ [self serveConnection:client]; });
 }
 
 /// Reads the whole request (headers + Content-Length body) before returning.
