@@ -14,6 +14,13 @@ static NSString *const kExpectedStartupKey = @"DSHExpectedStartupDuration";
 static const NSTimeInterval kDefaultExpectedStartup = 25;
 static NSString *const kRecentFailuresKey = @"DSHHarnessRecentFailures.1";
 static const NSTimeInterval kPersistentFailureWindow = 10 * 60;
+// Liveness checks run against a guest that has no JIT and that iOS freezes
+// whenever the app leaves the foreground. A single slow answer is normal:
+// the node process has to be thawed and can take many seconds to reply under
+// emulation. Judging it dead on the first miss killed a healthy server and
+// put the app in a restart loop, so require a run of misses instead.
+static const NSTimeInterval kHealthCheckTimeout = 20;
+static const NSUInteger kHealthCheckMissesBeforeRestart = 3;
 
 NSString *DSHHarnessStateName(DSHHarnessState state) {
     switch (state) {
@@ -42,6 +49,7 @@ NSString *DSHHarnessStateName(DSHHarnessState state) {
 @property (nonatomic) BOOL userStopped;
 @property (nonatomic) NSDate *lastLaunchAt;
 @property (nonatomic) BOOL healthCheckInFlight;
+@property (nonatomic) NSUInteger healthCheckMisses;
 @property (nonatomic) NSMutableArray<void (^)(BOOL)> *healthCheckCompletions;
 @property (nonatomic) BOOL tracksPersistentFailures;
 @end
@@ -200,6 +208,7 @@ NSString *DSHHarnessStateName(DSHHarnessState state) {
             double next = prev > 1 ? prev * 0.5 + elapsed * 0.5 : elapsed;
             [NSUserDefaults.standardUserDefaults setDouble:next forKey:kExpectedStartupKey];
             self.consecutiveCrashes = 0;
+            self.healthCheckMisses = 0;
             [self clearPersistentFailures];
             [self.log append:[NSString stringWithFormat:@"[dsh-ios] server answered after %.1fs", elapsed]];
             [DSHStartupMetrics.shared mark:@"harness_ready"];
@@ -299,7 +308,7 @@ NSString *DSHHarnessStateName(DSHHarnessState state) {
     NSUInteger generation = self.launchGeneration;
     NSURL *url = self.baseURL;
     __weak typeof(self) weakSelf = self;
-    [DSHReadinessProbe checkURL:url timeout:5 completion:^(BOOL alive) {
+    [DSHReadinessProbe checkURL:url timeout:kHealthCheckTimeout completion:^(BOOL alive) {
         typeof(self) self = weakSelf;
         if (self == nil)
             return;
@@ -307,9 +316,18 @@ NSString *DSHHarnessStateName(DSHHarnessState state) {
         NSArray<void (^)(BOOL)> *completions = [self.healthCheckCompletions copy];
         [self.healthCheckCompletions removeAllObjects];
         BOOL stillCurrent = generation == self.launchGeneration && self.state == DSHHarnessStateReady;
-        if (!alive && stillCurrent) {
-            [self.log append:@"[dsh-ios] health check failed; restarting server"];
-            [self restart];
+        if (alive) {
+            self.healthCheckMisses = 0;
+        } else if (stillCurrent) {
+            self.healthCheckMisses++;
+            if (self.healthCheckMisses >= kHealthCheckMissesBeforeRestart) {
+                [self.log append:@"[dsh-ios] health check failed; restarting server"];
+                [self restart];
+            } else {
+                [self.log append:[NSString stringWithFormat:
+                    @"[dsh-ios] health check missed (%lu/%lu); guest may be busy or frozen",
+                    (unsigned long) self.healthCheckMisses, (unsigned long) kHealthCheckMissesBeforeRestart]];
+            }
         }
         for (void (^callback)(BOOL) in completions)
             callback(alive && stillCurrent);
