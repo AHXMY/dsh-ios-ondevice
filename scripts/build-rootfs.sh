@@ -297,10 +297,9 @@ test -e "/root/.dsh/profiles/tui/node_modules/$DSH_TUI_PACKAGE/package.json" || 
 #
 # --dump-config only composes the configuration; it does not import a single
 # module, so it reported success on a tree that could not load at all on the
-# device. Booting with stdin at /dev/null makes the loader import every plugin
-# and then lets the terminal app exit on its own, which is the check that would
-# have caught both failures. The result is reported as the phase token at the
-# end: an \`exit 1\` here would not stop the build on its own.
+# device. The boot below makes the loader import every plugin. The result is
+# reported as the phase token at the end: an \`exit 1\` here would not stop the
+# build on its own.
 # Progress markers: when this phase fails, the captured output is all the log
 # gets, and a phase that dies mid-way used to show nothing at all. Each step
 # announces itself so the next failure names itself instead of needing a rerun.
@@ -314,13 +313,41 @@ test -d "/usr/local/lib/node_modules/$DSH_TUI_PACKAGE" || {
     echo "error: the tui bundle was not staged into the guest"; tui_ok=0
 }
 echo "step: tui-boot"
-node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
-    --profile tui </dev/null >/dev/null 2>/tmp/tui-boot.err || true
-if grep -qE "plugin tree failed to load|ERR_MODULE_NOT_FOUND|Cannot find package" /tmp/tui-boot.err; then
-    echo "error: the tui profile loaded but its plugin tree could not be imported:"
-    grep -E "Cannot find package|failed to import loader entry" /tmp/tui-boot.err | head -n 6
-    tui_ok=0
-fi
+# Run it the way the device does: under a real PTY. The previous version piped it
+# (stdin /dev/null, stdout redirected) and the app answered with its own guard --
+#   ui-tui: both stdin and stdout must be TTYs
+# -- which is proof the tree loaded, but it failed the build anyway. The PTY run
+# is also the only check that exercises node-pty in the guest.
+pty_out=\$(node /usr/local/share/dsh/tui-pty-check.cjs 2>&1 || true)
+printf '%s\n' "\$pty_out" | tail -n 22
+case "\$pty_out" in
+    *PTY-UNAVAILABLE*|*PTY-SPAWN-FAILED*)
+        echo "note: no usable PTY in this emulator; falling back to the piped boot"
+        node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+            --profile tui </dev/null >/dev/null 2>/tmp/tui-boot.err || true
+        if grep -qE "plugin tree failed to load|ERR_MODULE_NOT_FOUND|Cannot find package|Could not load the .* module" /tmp/tui-boot.err; then
+            echo "error: the tui profile loaded but its plugin tree could not be imported:"
+            grep -E "Cannot find package|failed to import loader entry|Could not load" /tmp/tui-boot.err | head -n 6
+            tui_ok=0
+        elif grep -q 'must be TTYs' /tmp/tui-boot.err; then
+            echo "tui: the app refused the pipe, exactly as it should outside a terminal"
+        else
+            echo "error: the tui boot produced unexpected stderr:"; tail -n 10 /tmp/tui-boot.err
+            tui_ok=0
+        fi
+        ;;
+    *PTY-OUTPUT-BYTES\ 0*)
+        echo "error: the tui started under a PTY but rendered nothing"; tui_ok=0
+        ;;
+    *PTY-OUTPUT-BYTES*)
+        echo "tui: started under a real PTY and rendered"
+        ;;
+    *)
+        echo "error: the PTY check produced no verdict:"; printf '%s\n' "\$pty_out" | tail -n 8
+        tui_ok=0
+        ;;
+esac
+rm -f /tmp/tui-boot.err
 # A failed boot must leave evidence behind. The first version of this check only
 # printed for those three patterns and then deleted the file, so any other way of
 # failing produced a bare "did not report success" with nothing to read.

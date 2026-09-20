@@ -24,9 +24,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Only the version this app actually ships. 0.1.0-rc.7 ("pinned") is the
+        # repository's historical default, but the terminal bundle
+        # (@brianynwu/dsh-tui) peers on dsh ^0.1.5-rc.1, so 0.1.5-rc.2 is the
+        # coherent pairing -- and the pinned job also spent 10-20 minutes per run
+        # stuck in guest phase 3 (npx fetching node-gyp over the emulator's
+        # partly-unreachable network) for a build nothing here installs.
         include:
-          - tag: pinned
-            dsh: pinned
           - tag: latest
             dsh: 0.1.5-rc.2
 

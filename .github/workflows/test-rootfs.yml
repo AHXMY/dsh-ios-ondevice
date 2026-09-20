@@ -20,13 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # One version, the one this app ships: the terminal bundle peers on dsh
+        # ^0.1.5-rc.1, so testing the other three candidates now only costs runner
+        # time (and the pinned one stalls for 10-20 minutes per run in guest phase
+        # 3 on npx fetching node-gyp over the emulator's partly-unreachable net).
         include:
-          - tag: pinned
-            dsh: pinned
-          - tag: "0.1.2-rc.1"
-            dsh: 0.1.2-rc.1
-          - tag: "0.1.3-alpha.2"
-            dsh: 0.1.3-alpha.2
           - tag: "0.1.5-rc.2"
             dsh: 0.1.5-rc.2
 
