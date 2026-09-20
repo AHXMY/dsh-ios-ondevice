@@ -86,6 +86,17 @@ grep -A4 '^- id: sandbox-policy' "$WORK/config.yml" > "$WORK/sandbox-row.yml"
 check "sandbox-policy patched to danger-full-access" grep -q 'danger-full-access' "$WORK/sandbox-row.yml"
 check "hmr row present (needs --expose-internals)"    grep -q 'cordis-plugin-hmr' "$WORK/config.yml"
 
+echo "== the tui profile (the app's terminal surface)"
+# dsh ships no terminal app, so the terminal is the out-of-tree bundle that
+# build-rootfs.sh installs as the `tui` profile. Composing it proves the bundle
+# resolves, the profile layer applies, and `dsh-cli` has something to launch --
+# none of which can be checked on the device, where there is no network to
+# install a missing piece.
+guest 'export HOME=/root; node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js --profile tui --dump-config' > "$WORK/config-tui.yml"
+check "tui profile composes"              test -s "$WORK/config-tui.yml"
+check "tui profile carries dsh-tui"       grep -q 'dsh-tui' "$WORK/config-tui.yml"
+check "dsh-cli launches the tui profile"  grep -q -- '--profile tui' "$WORK/fakefs/data/usr/local/bin/dsh-cli"
+
 echo "== headless LLM round trip through mock DeepSeek server (SSE via fetch polyfill)"
 node "$HERE/mock-deepseek.mjs" "$MOCK_PORT" > "$WORK/mock.log" 2>&1 &
 MOCK_PID=$!

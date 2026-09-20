@@ -1,0 +1,26 @@
+# Profile layer for the `tui` terminal surface, applied after the dsh-tui
+# bundle (profiles/tui/cordis.patch.yml is this file, installed by
+# scripts/build-rootfs.sh).
+#
+# The TUI, like headless, has no approval/request answerer: the repository note
+# 2026-07-31-workspace-write-surface-default.md records that "the TUI has no
+# approval/request answerer", so a session left on `ask` would fail closed to
+# `unavailable` and reject every sensitive action with nobody to ask. The guest
+# kernel has no bwrap or Landlock either, which is the same reason the web
+# profile is pinned here: an unusable confinement runner fails closed with
+# SANDBOX_UNAVAILABLE rather than running unconfined.
+#
+# The whole guest already runs inside the iOS app sandbox, so the sandbox knob
+# has nothing left to enforce; the only real choice is whether risky tool calls
+# ask, and there is nobody here to answer.
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.env.DSH_WORKSPACE ?? process.cwd()
+- id: permission
+  config:
+    defaultPreset: danger-full-access
+    presets:
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never

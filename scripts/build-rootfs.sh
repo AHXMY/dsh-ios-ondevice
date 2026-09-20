@@ -20,6 +20,11 @@ ALPINE_TARBALL="alpine-minirootfs-${ALPINE_VER}.0-aarch64.tar.gz"
 ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VER}/releases/aarch64/${ALPINE_TARBALL}"
 # Pinned dsh release; bump together with package-lock.json under rootfs/staging.
 DSH_VERSION="${DSH_VERSION:-0.1.0-rc.7}"
+# The terminal surface, installed into the `tui` profile at build time. dsh
+# removed its own terminal app (@deepseek-ai/dsh-tui) on 2026-08-04, so the
+# terminal is an out-of-tree bundle; dsh-TUI is the Claude Code-style fullscreen
+# one and its peer range (^0.1.0-rc.7) matches the pinned dsh above.
+DSH_TUI_PACKAGE="${DSH_TUI_PACKAGE:-@ccchimneyyy/dsh-tui}"
 
 log() { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -111,6 +116,28 @@ test -f build/Release/pty.node
 # then drop in our patch layer.
 node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --dump-config >/dev/null
 install -m 0644 /usr/local/share/dsh/cordis.patch.yml /root/.dsh/profiles/web/cordis.patch.yml
+# The interactive terminal surface. dsh ships no terminal app of its own -- the
+# repository removed @deepseek-ai/dsh-tui on 2026-08-04 -- so the terminal is an
+# out-of-tree profile bundle, and a non-template profile may only be created
+# through `dsh plugin`, which scaffolds the directory and installs the bundle
+# the way the loader resolves it (profiles/node_modules, a hoisted workspace).
+# This has to happen here: the guest has network during the build because the
+# emulator's sockets pass through to the runner, and none at all on the device.
+# dsh plugin forwards to pnpm, which is not part of the base image.
+corepack enable >/dev/null 2>&1 || npm install -g pnpm >/dev/null 2>&1 || true
+node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+    plugin --profile tui add "$DSH_TUI_PACKAGE" 2>&1 | tail -5
+test -f /root/.dsh/profiles/tui/package.json || {
+    echo "error: dsh plugin --profile tui add $DSH_TUI_PACKAGE left no profile" >&2
+    exit 1
+}
+install -m 0644 /usr/local/share/dsh/tui.patch.yml /root/.dsh/profiles/tui/cordis.patch.yml
+node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+    --profile tui --dump-config >/dev/null || {
+    echo "error: the tui profile does not compose" >&2
+    exit 1
+}
+echo "tui profile: \$(node -e 'const p=require("/root/.dsh/profiles/tui/package.json");console.log(p.dsh.profile.bundles.join(", "))')"
 # Home-level layer: applies to every profile (see rootfs/overlay/.../home.patch.yml).
 install -m 0644 /usr/local/share/dsh/home.patch.yml /root/.dsh/cordis.patch.yml
 mkdir -p /root/workspace
