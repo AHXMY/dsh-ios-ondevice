@@ -74,6 +74,10 @@ check "dsh-selftest passes"     grep -q 'SELFTEST OK' "$WORK/sanity.txt"
 check "sharp keeps musl arm64 runtime" test -d "$WORK/fakefs/data/usr/local/lib/node_modules/@img/sharp-linuxmusl-arm64"
 check "sharp drops unusable glibc runtime" test ! -e "$WORK/fakefs/data/usr/local/lib/node_modules/@img/sharp-linux-arm64"
 check "sharp drops unusable wasm fallback" test ! -e "$WORK/fakefs/data/usr/local/lib/node_modules/@img/sharp-wasm32"
+# The prune is by rule, not by the three names above: npm resolves every
+# platform's optional build when there is no lockfile to pin the set, and the
+# win32/darwin payloads are tens of MB each. Exactly the musl pair may survive.
+check "sharp keeps only the musl arm64 pair" test "$(ls -1 "$WORK/fakefs/data/usr/local/lib/node_modules/@img" 2>/dev/null | wc -l | tr -d ' ')" = "2"
 if find "$WORK/fakefs/data" -name '._*' -print -quit | grep -q .; then
     bad "rootfs contains no macOS AppleDouble files"
 else

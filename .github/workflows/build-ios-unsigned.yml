@@ -68,7 +68,13 @@ jobs:
         run: |
           echo "目标 dsh 版本: ${DSH_VERSION}"
           node -e "const fs=require('fs');const p='rootfs/staging/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.dependencies['@deepseek-ai/dsh']=process.env.DSH_VERSION;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');console.log('pinned ->',j.dependencies)"
-          rm -f rootfs/staging/package-lock.json
+          # Keep the lockfile in step with the rewritten manifest instead of
+          # deleting it. `npm ci` needs the two to agree, and without a lockfile
+          # the staging step falls back to a bare `npm install` -- which resolved
+          # 807 packages including every platform's binaries and shipped a
+          # 211 MB image instead of the usual ~70 MB one.
+          ( cd rootfs/staging && npm install --package-lock-only --ignore-scripts --no-audit --no-fund )
+          node -e "const l=require('./rootfs/staging/package-lock.json');console.log('lockfile packages:', Object.keys(l.packages||{}).length)"
 
       - name: 编译 iSH-ARM64 模拟器
         run: |

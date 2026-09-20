@@ -11,3 +11,17 @@ ish-arm64/deps/build/
 
 # Local pre-edit snapshots from the workspace backup tool.
 backups/
+
+# ---------------------------------------------------------------------------
+# NEVER commit anything from the owner's security preset. Its persona, its
+# authorization registry and its allowlists are private property: the registry
+# alone names every client and every authorized target. The Node ports of its
+# tools live next to this checkout instead, and reach the device over USB.
+# ---------------------------------------------------------------------------
+preset-security/
+**/.agent-presets/
+**/authorization*.md
+**/infra-allowlist.txt
+**/persona*.md
+*.credentials.yaml
+.env

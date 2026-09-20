@@ -30,14 +30,26 @@ log() { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # The guest node prints this warning on every start; strip it from build logs.
-# `sed` deliberately returns success for empty input while `pipefail` still
-# propagates a failing emulator command.  The old `grep ... || true` hid guest
-# failures and could export a corrupt image as a successful build.
 filter() { sed '/expose_wasm/d'; }
 
 ish() {
     # ish <script-on-stdin>; runs /bin/sh inside the fakefs
     "$ISH_BUILD/ish" -f "$WORK/fakefs" /bin/sh 2>&1 | filter
+}
+
+# Every guest phase ends by printing a token, and the host checks for it. A
+# guest `exit 1` does not stop this build on its own: phase 3 once printed its
+# own "error: ..." and the image was still exported as a success, so a broken
+# image could ship with a green build. The token is checked instead, and the
+# captured output is printed immediately afterwards so the log still carries it.
+guest_phase() {
+    local name="$1" token="$2" out
+    out=$(ish)
+    printf '%s\n' "$out"
+    case "$out" in
+        *"$token"*) log "  $name ok" ;;
+        *) die "$name did not report success (no $token in its output)" ;;
+    esac
 }
 
 [ -x "$ISH_BUILD/ish" ] || die "iSH CLI not built. Run: (cd $ISH_SRC && meson setup build-arm64-release -Dguest_arch=arm64 --buildtype=release && ninja -C build-arm64-release)"
@@ -63,7 +75,7 @@ cp "$ROOT/rootfs/staging/package.json" stage/
 cp stage/package-lock.json "$ROOT/rootfs/staging/package-lock.json"
 
 log "Guest phase 1: packages"
-ish <<'EOF'
+guest_phase "guest phase 1" "DSH-PHASE1-OK" <<'EOF'
 set -e
 # DNS baked into the shipped image. 8.8.8.8 / 1.1.1.1 are commonly blackholed
 # on mainland-China networks, and a guest whose DNS never answers makes every
@@ -75,6 +87,7 @@ echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 apk update >/dev/null
 apk add --no-progress nodejs npm nodejs-dev python3 make g++ bash git curl openssh-client ca-certificates 2>&1 | tail -1
 node -v; npm -v
+echo DSH-PHASE1-OK
 EOF
 
 log "Guest phase 2: install node_modules + polyfills + overlay"
@@ -82,14 +95,23 @@ log "Guest phase 2: install node_modules + polyfills + overlay"
 # node polyfills, our overlay) and stream it into the guest in a single pass.
 rm -rf payload && mkdir -p payload/usr/local/lib payload/lib
 mv stage/node_modules payload/usr/local/lib/node_modules
-# npm retains every optional sharp binary named in the lockfile even when the
-# target is pinned to linux/arm64/musl.  The glibc build cannot load on Alpine,
-# and the wasm fallback cannot run under DSH's jitless Node.  Keep only the
-# musl/arm64 pair that sharp actually selects in the guest.  Also strip macOS
-# AppleDouble files before they become tens of thousands of fakefs entries.
+# Only the musl/arm64 pair of sharp's binaries can load in this guest. npm keeps
+# every platform's optional build it resolved -- and when the staging step falls
+# back to a bare `npm install` (no lockfile to pin the set) that is all 25 of
+# them, tens of MB of win32 and wasm payloads that shipped and doubled the image
+# to 211 MB. Prune by rule rather than by naming the three that happened to be
+# obvious: whatever is not the pair sharp actually selects goes.  Also strip
+# macOS AppleDouble files before they become tens of thousands of fakefs entries.
 rm -rf payload/usr/local/lib/node_modules/@img/sharp-linux-arm64 \
        payload/usr/local/lib/node_modules/@img/sharp-libvips-linux-arm64 \
        payload/usr/local/lib/node_modules/@img/sharp-wasm32
+if [ -d payload/usr/local/lib/node_modules/@img ]; then
+    find payload/usr/local/lib/node_modules/@img -mindepth 1 -maxdepth 1 -type d \
+        ! -name 'sharp-linuxmusl-arm64' \
+        ! -name 'sharp-libvips-linuxmusl-arm64' \
+        -exec rm -rf {} + 2>/dev/null || true
+    echo "  sharp variants kept: $(ls payload/usr/local/lib/node_modules/@img 2>/dev/null | tr '\n' ' ')"
+fi
 cp "$ISH_SRC"/app/RootfsPatch.bundle/files/lib/*.js payload/lib/
 # Record the overlay version so the app does not re-apply (and downgrade) the
 # same RootfsPatch files on first launch.
@@ -101,9 +123,14 @@ find payload -name '._*' -delete
 # when this payload is unpacked by the Linux guest.
 COPYFILE_DISABLE=1 tar czf payload.tgz -C payload .
 "$ISH_BUILD/ish" -f "$WORK/fakefs" /bin/sh -c 'cd / && tar xzf -' < payload.tgz 2>&1 | filter
+# Phase 2 takes its stdin from the payload tarball rather than a heredoc, so it
+# cannot carry a token. The fakefs data directory mirrors the guest, so the
+# unpacked result is checked directly on the host instead.
+[ -f "$WORK/fakefs/data/usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js" ] ||
+    die "guest phase 2 did not unpack the payload into the fakefs"
 
 log "Guest phase 3: node-pty rebuild for musl, profile, cleanup"
-ish <<EOF
+guest_phase "guest phase 3" "DSH-PHASE3-OK" <<EOF
 set -e
 export HOME=/root
 chmod +x /usr/local/bin/* /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js
@@ -148,17 +175,17 @@ cat > /root/.dsh/profiles/tui/package.json <<'TUI_PROFILE_EOF'
 TUI_PROFILE_EOF
 install -m 0644 /usr/local/share/dsh/tui.patch.yml /root/.dsh/profiles/tui/cordis.patch.yml
 # Compose it once here so a broken bundle fails the build, not first launch on a
-# device with no way to install anything.
+# device with no way to install anything. The result is collected and reported
+# as the phase token at the end: an `exit 1` here would not stop the build.
+tui_ok=1
 node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
-    --profile tui --dump-config >/dev/null || {
-    echo "error: the tui profile does not compose" >&2
-    exit 1
+    --profile tui --dump-config >/dev/null 2>&1 || {
+    echo "error: the tui profile does not compose"; tui_ok=0
 }
-test -e /root/.dsh/profiles/node_modules/@ccchimneyyy/dsh-tui || {
-    echo "error: the tui bundle is not resolvable from the profile" >&2
-    exit 1
+test -d /usr/local/lib/node_modules/@ccchimneyyy/dsh-tui || {
+    echo "error: the tui bundle was not staged into the guest"; tui_ok=0
 }
-echo "tui profile ok"
+echo "tui profile: bundles=\$(node -e 'try{console.log(require("/root/.dsh/profiles/tui/package.json").dsh.profile.bundles.join(","))}catch(e){console.log("?")}')  ok=\$tui_ok"
 # Home-level layer: applies to every profile (see rootfs/overlay/.../home.patch.yml).
 install -m 0644 /usr/local/share/dsh/home.patch.yml /root/.dsh/cordis.patch.yml
 mkdir -p /root/workspace
@@ -168,6 +195,7 @@ apk add --no-progress libstdc++ libgcc >/dev/null
 rm -rf /root/.npm /root/.cache /var/cache/apk/* /tmp/* /usr/local/lib/node_modules/node-pty/build/Release/obj.target
 echo "guest node: \$(node -v), dsh: \$(dsh --version)"
 du -sh /usr/local/lib/node_modules /usr/lib/node_modules 2>/dev/null
+[ "\$tui_ok" = "1" ] && echo DSH-PHASE3-OK
 EOF
 
 log "Export root.tar.gz"
