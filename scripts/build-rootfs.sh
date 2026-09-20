@@ -48,13 +48,25 @@ ish() {
 # own "error: ..." and the image was still exported as a success, so a broken
 # image could ship with a green build. The token is checked instead, and the
 # captured output is printed immediately afterwards so the log still carries it.
+#
+# The emulator's own exit status is captured too. `set -o pipefail` means a
+# non-zero emulator status would otherwise abort the build from *inside* the
+# command substitution -- reported at the call site, with the phase output never
+# printed -- so phase 3 died once as a bare "did not report success" next to a
+# completely empty log. Now the status is reported and an empty capture says so.
 guest_phase() {
-    local name="$1" token="$2" out
-    out=$(ish)
-    printf '%s\n' "$out"
+    local name="$1" token="$2" out rc=0
+    set +e
+    out=$(ish); rc=$?
+    set -e
+    if [ -z "$out" ]; then
+        printf '\033[1;33mWARN\033[0m %s produced no output at all (emulator exit %s)\n' "$name" "$rc"
+    else
+        printf '%s\n' "$out"
+    fi
     case "$out" in
         *"$token"*) log "  $name ok" ;;
-        *) die "$name did not report success (no $token in its output)" ;;
+        *) die "$name did not report success (no $token in its output; emulator exit $rc)" ;;
     esac
 }
 
@@ -160,28 +172,39 @@ COPYFILE_DISABLE=1 tar czf payload.tgz -C payload .
 log "Guest phase 3: node-pty rebuild for musl, profile, cleanup"
 guest_phase "guest phase 3" "DSH-PHASE3-OK" <<EOF
 set -e
+# First line of the body on purpose: when a phase dies silently, an empty capture
+# cannot tell "the shell never started" from "the output went missing". This
+# marker settles it, and each later stage announces itself in the same way.
+echo "step: entry"
 export HOME=/root
-chmod +x /usr/local/bin/* /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js
-ln -sf ../lib/node_modules/@deepseek-ai/dsh/lib/bin.js /usr/local/bin/dsh
+chmod +x /usr/local/bin/* /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js || echo "warn: chmod on /usr/local/bin failed"
+ln -sf ../lib/node_modules/@deepseek-ai/dsh/lib/bin.js /usr/local/bin/dsh || echo "warn: the dsh launcher symlink could not be written"
 cd /usr/local/lib/node_modules/node-pty
 rm -rf build prebuilds
+echo "step: node-pty"
 npx --yes node-gyp rebuild --nodedir=/usr 2>&1 | tail -1
-test -f build/Release/pty.node
+test -f build/Release/pty.node || { echo "error: node-pty did not build pty.node"; exit 1; }
 # Pre-create the web profile so first launch on device does no scaffolding,
-# then drop in our patch layer.
-node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --dump-config >/dev/null
-install -m 0644 /usr/local/share/dsh/cordis.patch.yml /root/.dsh/profiles/web/cordis.patch.yml
+# then drop in our patch layer. Non-fatal on purpose: this app boots the tui
+# profile, and a dsh release that scaffolds its web profile differently must not
+# take the terminal down with it.
+echo "step: web-profile"
+if node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --dump-config >/dev/null; then
+    install -m 0644 /usr/local/share/dsh/cordis.patch.yml /root/.dsh/profiles/web/cordis.patch.yml
+else
+    echo "warn: the web profile does not compose on this dsh release; the tui profile is unaffected"
+fi
 # The interactive terminal surface. dsh ships no terminal app of its own -- the
 # repository removed @deepseek-ai/dsh-tui on 2026-08-04 -- so the terminal is an
 # out-of-tree profile bundle, installed into the guest's global node_modules by
 # the staging step above.
 #
 # The profile directory is written here rather than created with
-# `dsh plugin --profile tui add`: that forwards to pnpm, which means installing
+# \`dsh plugin --profile tui add\`: that forwards to pnpm, which means installing
 # the package a second time inside the emulator over the guest's network. A
 # first attempt at it sat on this step for 37 minutes (against a 5.6-minute
 # baseline for the whole rootfs build) and had to be cancelled. Nothing about
-# the profile needs a package manager -- `dsh plugin` produces exactly this
+# the profile needs a package manager -- \`dsh plugin\` produces exactly this
 # package.json plus the bundle in the profile's node_modules, and dsh's own
 # bootstrap generates the resolution shims for whatever the bundles name.
 mkdir -p /root/.dsh/profiles/tui
@@ -224,7 +247,11 @@ printf '%s\n' "/usr/local/lib/node_modules/$DSH_TUI_PACKAGE" \
 # device. Booting with stdin at /dev/null makes the loader import every plugin
 # and then lets the terminal app exit on its own, which is the check that would
 # have caught both failures. The result is reported as the phase token at the
-# end: an `exit 1` here would not stop the build on its own.
+# end: an \`exit 1\` here would not stop the build on its own.
+# Progress markers: when this phase fails, the captured output is all the log
+# gets, and a phase that dies mid-way used to show nothing at all. Each step
+# announces itself so the next failure names itself instead of needing a rerun.
+echo "step: tui-compose"
 tui_ok=1
 node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
     --profile tui --dump-config >/dev/null 2>&1 || {
@@ -233,12 +260,21 @@ node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js 
 test -d "/usr/local/lib/node_modules/$DSH_TUI_PACKAGE" || {
     echo "error: the tui bundle was not staged into the guest"; tui_ok=0
 }
+echo "step: tui-boot"
 node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
-    --profile tui </dev/null >/dev/null 2>/tmp/tui-boot.err
+    --profile tui </dev/null >/dev/null 2>/tmp/tui-boot.err || true
 if grep -qE "plugin tree failed to load|ERR_MODULE_NOT_FOUND|Cannot find package" /tmp/tui-boot.err; then
     echo "error: the tui profile loaded but its plugin tree could not be imported:"
     grep -E "Cannot find package|failed to import loader entry" /tmp/tui-boot.err | head -n 6
     tui_ok=0
+fi
+# A failed boot must leave evidence behind. The first version of this check only
+# printed for those three patterns and then deleted the file, so any other way of
+# failing produced a bare "did not report success" with nothing to read.
+if [ "\$tui_ok" != "1" ]; then
+    echo "--- tui boot stderr (tail) ---"
+    tail -n 20 /tmp/tui-boot.err
+    echo "--- end tui boot stderr ---"
 fi
 rm -f /tmp/tui-boot.err
 echo "tui profile: bundles=\$(node -e 'try{console.log(require("/root/.dsh/profiles/tui/package.json").dsh.profile.bundles.join(","))}catch(e){console.log("?")}')  ok=\$tui_ok"
@@ -246,12 +282,27 @@ echo "tui profile: bundles=\$(node -e 'try{console.log(require("/root/.dsh/profi
 install -m 0644 /usr/local/share/dsh/home.patch.yml /root/.dsh/cordis.patch.yml
 mkdir -p /root/workspace
 # Slim down: build tooling is only needed for node-pty.
+echo "step: slim"
 apk del --no-progress nodejs-dev python3 make g++ >/dev/null 2>&1 || true
 apk add --no-progress libstdc++ libgcc >/dev/null
 rm -rf /root/.npm /root/.cache /var/cache/apk/* /tmp/* /usr/local/lib/node_modules/node-pty/build/Release/obj.target
-echo "guest node: \$(node -v), dsh: \$(dsh --version)"
-du -sh /usr/local/lib/node_modules /usr/lib/node_modules 2>/dev/null
+# Never call the launcher by its bare name. The guest shell's PATH is not
+# guaranteed to carry /usr/local/bin, and under set -e a command-not-found
+# raised inside this substitution ended the whole phase: the 0.1.5-rc.2 build
+# died here with "scripts/build-rootfs.sh: line 161: dsh: command not found" and
+# no phase token, which reads exactly like a tui regression. Report what is
+# actually on disk instead, and never let a diagnostic end the phase.
+echo "step: report"
+dsh_launcher=/usr/local/bin/dsh
+dsh_version="not executable"
+if [ -x "\$dsh_launcher" ]; then
+    dsh_version=\$("\$dsh_launcher" --version 2>&1 | head -n 1 || true)
+fi
+echo "guest node: \$(node -v), dsh: \$dsh_version"
+ls -l /usr/local/bin/dsh /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js 2>&1 || true
+du -sh /usr/local/lib/node_modules /usr/lib/node_modules 2>/dev/null || true
 [ "\$tui_ok" = "1" ] && echo DSH-PHASE3-OK
+exit 0
 EOF
 
 log "Export root.tar.gz"

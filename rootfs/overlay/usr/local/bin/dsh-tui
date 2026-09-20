@@ -56,4 +56,15 @@ export DEEPSEEK_BASE_URL
 : "${DSH_PERMISSION_MODE:=danger-full-access}"
 export DSH_PERMISSION_MODE
 
-exec node --expose-internals "$DSH_BIN" --profile tui "$@"
+# stderr is mirrored into a file as well: the TUI owns stdout/stdin for its
+# rendering, and when it fails to start the reason lands on stderr, which no
+# part of this app captures. Keeping a copy means a failure on the device can be
+# read back over USB instead of being described from a screenshot.
+node --expose-internals "$DSH_BIN" --profile tui "$@" 2>"$DSH_HOME/tui.err" || {
+    status=$?
+    printf '\n\033[1;31mdsh --profile tui exited with %s\033[0m\n' "$status"
+    printf 'stderr was captured to %s\n' "$DSH_HOME/tui.err"
+    printf 'press Return to restart the terminal session\n'
+    read -r _ || true
+    exit "$status"
+}
