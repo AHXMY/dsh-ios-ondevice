@@ -51,6 +51,10 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
 /// a retry may add a second; more than this means something is looping, and
 /// refusing is far better than accumulating sockets until the app is killed.
 static const NSUInteger kMaxConcurrentForwards = 8;
+/// A forwarded request older than this is treated as lost and its slot reclaimed.
+/// Nothing legitimate runs this long, and the cap is useless if the slots of
+/// requests abandoned by a backgrounded (or killed) app are never returned.
+static const NSTimeInterval kForwardStaleSeconds = 240;
 
 static NSUInteger gActiveForwards = 0;
 static NSLock *gForwardLock = nil;
@@ -98,6 +102,8 @@ static void DSHReleaseForwardSlot(void) {
 @property (nonatomic, strong, nullable) NSURLSession *session;
 @property (nonatomic, strong, nullable) NSURLSessionDataTask *task;
 @property (nonatomic, copy) NSString *label;
+/// When this request started, for the stale-request sweep.
+@property (nonatomic, strong) NSDate *startedAt;
 @end
 
 @implementation DSHForwardConnection
@@ -106,6 +112,7 @@ static void DSHReleaseForwardSlot(void) {
     if ((self = [super init])) {
         _fd = fd;
         _label = label;
+        _startedAt = [NSDate date];
     }
     return self;
 }
@@ -241,6 +248,9 @@ static void DSHReleaseForwardSlot(void) {
 @property (nonatomic, strong) dispatch_queue_t workQueue;
 @property (nonatomic, strong) dispatch_source_t acceptSource;
 @property (nonatomic, strong, readwrite) NSString *upstream;
+/// Requests accepted and not yet finished, swept for the ones that were lost.
+@property (nonatomic, strong) NSMutableArray<DSHForwardConnection *> *live;
+@property (nonatomic, strong) NSLock *liveLock;
 @end
 
 @implementation DSHModelForwarder
@@ -264,6 +274,8 @@ static void DSHReleaseForwardSlot(void) {
         // read must never hold up the accept handler, or the listener stops
         // taking new work while one slow client sits there.
         _workQueue = dispatch_queue_create("dsh.model-forwarder.work", DISPATCH_QUEUE_CONCURRENT);
+        _live = [NSMutableArray array];
+        _liveLock = [NSLock new];
         NSString *override = NSProcessInfo.processInfo.environment[@"DSH_FORWARD_UPSTREAM"];
         _upstream = override.length > 0 ? override : @"https://api.deepseek.com";
     }
@@ -406,7 +418,38 @@ static NSData *DSHReadRequest(int fd, NSUInteger *headerLength) {
     return buffer;
 }
 
+/// Reclaim slots held by requests that will never finish.
+///
+/// A request outlives its client whenever iOS suspends or kills the app: the
+/// socket dies, no delegate callback ever arrives, and its slot stays taken. With
+/// a fixed cap that is fatal -- after a handful of suspensions the forwarder
+/// refuses everything and the terminal shows "retrying model request 5/5" forever
+/// (the cap exists precisely to stop a retry storm, so it must not become one).
+/// Stale entries are collected under the lock and finished after releasing it:
+/// finishing takes the slot lock, and the two must never be held together.
+- (void)sweepStaleConnections {
+    NSDate *now = [NSDate date];
+    NSMutableArray<DSHForwardConnection *> *stale = [NSMutableArray array];
+    [self.liveLock lock];
+    NSMutableArray<DSHForwardConnection *> *keep = [NSMutableArray arrayWithCapacity:self.live.count];
+    for (DSHForwardConnection *connection in self.live) {
+        if (connection.finished) continue;
+        if ([now timeIntervalSinceDate:connection.startedAt] > kForwardStaleSeconds)
+            [stale addObject:connection];
+        else
+            [keep addObject:connection];
+    }
+    self.live = keep;
+    [self.liveLock unlock];
+    for (DSHForwardConnection *connection in stale) {
+        [DSHHarness.shared.log append:[NSString stringWithFormat:
+            @"[dsh-ios] forward %@ held a slot for over %d s; reclaiming it",
+            connection.label, (int) kForwardStaleSeconds]];
+        [connection finish];
+    }
+}
 - (void)serveConnection:(int)fd {
+    [self sweepStaleConnections];
     NSUInteger headLength = 0;
     NSData *raw = DSHReadRequest(fd, &headLength);
     if (raw == nil || headLength == 0) {
@@ -440,6 +483,9 @@ static NSData *DSHReadRequest(int fd, NSUInteger *headerLength) {
         return;
     }
     connection.slotHeld = YES;
+    [self.liveLock lock];
+    [self.live addObject:connection];
+    [self.liveLock unlock];
 
     NSURLComponents *components = [NSURLComponents componentsWithString:self.upstream];
     NSURL *upstreamURL = [NSURL URLWithString:path relativeToURL:components.URL];

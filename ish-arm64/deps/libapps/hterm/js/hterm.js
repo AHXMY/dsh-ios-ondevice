@@ -244,6 +244,18 @@ hterm.notify = function(params) {
     params = {};
   }
 
+  // A host without the Notification API must not be able to take the terminal
+  // down. This build runs hterm inside a WKWebView, where `Notification` does not
+  // exist at all, so the constructor below used to throw a ReferenceError -- which
+  // surfaced on device as "error sending bytes to the terminal" and left a blank
+  // screen until the app was relaunched. Anything that asks for a notification
+  // (the bell, or an OSC 9 sequence from the program in the terminal) now
+  // degrades to a console warning.
+  if (typeof Notification === 'undefined') {
+    console.warn('hterm: host has no Notification API; dropping notification');
+    return null;
+  }
+
   // Merge the user's choices with the default settings.  We don't take it
   // directly in case it was stuffed with excess junk.
   const options = {
