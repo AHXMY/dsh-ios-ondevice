@@ -1746,19 +1746,32 @@ hterm.Terminal.prototype.setupScrollPort_ = function() {
   // full-screen application.
   //
   // hterm answers a touch drag by moving its own scrollport, and an application
-  // holding the alternate screen leaves no scrollback there -- so on a phone such
-  // an application's transcript can only ever be read one screen deep. That is
-  // the reported symptom exactly: the conversation stops moving after a line or
-  // two and cannot be scrolled back at all.
+  // holding the alternate screen paints one screenful at a time -- so on a phone
+  // such an application's transcript can only ever be read one screen deep. That
+  // is the reported symptom: the conversation stops moving after a line or two
+  // and cannot be scrolled back at all.
   //
-  // Wheel events would be the canonical path, and this terminal already forwards
-  // them (`onScrollWheel = onMouse`), but a touch drag never produces one and
+  // Whether the application wants the gesture is a fact hterm already knows:
+  // it asks for mouse reporting exactly when it manages its own viewport (this
+  // app's terminal UI enables 1000h/1002h/1006h at startup). A plain shell does
+  // not, so dragging past the end of its scrollback stays silent, as it should.
+  //
+  // Wheel events would be the canonical path -- `onScrollWheel = onMouse` above
+  // already forwards them -- but a touch drag never produces one, and
   // synthesising WheelEvents inside a WKWebView is not something to bet a user's
-  // transcript on. A drag of a few rows therefore becomes one page key -- the
-  // sequences a desktop PageUp/PageDown sends, and the keys every full-screen
-  // terminal UI binds.
+  // transcript on. A drag of several rows becomes one page key instead: the
+  // sequences a desktop PageUp/PageDown sends, which every full-screen terminal
+  // UI binds.
   let dragPending = 0;
   this.scrollPort_.onTouchScroll = (delta) => {
+    if (this.vt.mouseReport == this.vt.MOUSE_REPORT_DISABLED) {
+      dragPending = 0;
+      return;
+    }
+    // A change of direction starts a fresh gesture, so a reversal answers
+    // immediately instead of first spending a leftover accumulation.
+    if ((delta > 0 && dragPending < 0) || (delta < 0 && dragPending > 0))
+      dragPending = 0;
     dragPending += delta;
     const rowsPerPage = this.scrollPort_.characterSize.height * 6;
     while (Math.abs(dragPending) >= rowsPerPage) {
