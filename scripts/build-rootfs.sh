@@ -29,6 +29,8 @@ DSH_VERSION="${DSH_VERSION:-0.1.0-rc.7}"
 # `workspace:*` dependencies and no package manager can install it outside its
 # own workspace -- npm fails with EUNSUPPORTEDPROTOCOL.)
 DSH_TUI_PACKAGE="${DSH_TUI_PACKAGE:-@brianynwu/dsh-tui}"
+# Its scope directory, for the resolution redirects guest phase 3 writes.
+TUI_SCOPE="${DSH_TUI_PACKAGE%%/*}"
 
 log() { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -126,11 +128,17 @@ rm -rf payload/usr/local/lib/node_modules/@img/sharp-linux-arm64 \
        payload/usr/local/lib/node_modules/@img/sharp-libvips-linux-arm64 \
        payload/usr/local/lib/node_modules/@img/sharp-wasm32
 if [ -d payload/usr/local/lib/node_modules/@img ]; then
-    find payload/usr/local/lib/node_modules/@img -mindepth 1 -maxdepth 1 -type d \
-        ! -name 'sharp-linuxmusl-arm64' \
-        ! -name 'sharp-libvips-linuxmusl-arm64' \
+    # Only the platform binaries are pruned. @img also holds plain-JavaScript
+    # packages that the platform builds depend on -- @img/colour is imported by
+    # sharp/dist/colour.mjs -- and deleting those took the whole tree down on the
+    # device with "Cannot find package '@img/colour'". Match sharp's own binary
+    # naming and leave everything else alone.
+    find payload/usr/local/lib/node_modules/@img -mindepth 1 -maxdepth 1 \
+        \( -name 'sharp-linux*' -o -name 'sharp-darwin*' -o -name 'sharp-win32*' \
+           -o -name 'sharp-freebsd*' -o -name 'sharp-webcontainers*' -o -name 'sharp-wasm32' \
+           -o -name 'sharp-libvips-linux*' -o -name 'sharp-libvips-darwin*' \) \
         -exec rm -rf {} + 2>/dev/null || true
-    echo "  sharp variants kept: $(ls payload/usr/local/lib/node_modules/@img 2>/dev/null | tr '\n' ' ')"
+    echo "  @img kept: $(ls payload/usr/local/lib/node_modules/@img 2>/dev/null | tr '\n' ' ')"
 fi
 cp "$ISH_SRC"/app/RootfsPatch.bundle/files/lib/*.js payload/lib/
 # Record the overlay version so the app does not re-apply (and downgrade) the
@@ -194,9 +202,29 @@ cat > /root/.dsh/profiles/tui/package.json <<'TUI_PROFILE_EOF'
 }
 TUI_PROFILE_EOF
 install -m 0644 /usr/local/share/dsh/tui.patch.yml /root/.dsh/profiles/tui/cordis.patch.yml
-# Compose it once here so a broken bundle fails the build, not first launch on a
-# device with no way to install anything. The result is collected and reported
-# as the phase token at the end: an `exit 1` here would not stop the build.
+# dsh's profile bootstrap writes resolution redirects for a bundle's dependency
+# closure but not for the bundle itself, so the terminal app cannot be resolved
+# from its own profile. On the device the whole tree died with:
+#   Cannot find package '@brianynwu/dsh-tui' imported from /root/.dsh/profiles/tui/
+# The chain it builds for everything else is
+#   <profile>/node_modules/<pkg>
+#     -> <profile>/.dsh-module-fallback/node_modules/<pkg>
+#       -> /usr/local/lib/node_modules/<pkg>
+# so the missing pair is written here, in the same shape.
+mkdir -p "/root/.dsh/profiles/tui/node_modules/$TUI_SCOPE" \
+         "/root/.dsh/profiles/tui/.dsh-module-fallback/node_modules/$TUI_SCOPE"
+printf '%s\n' "/root/.dsh/profiles/tui/.dsh-module-fallback/node_modules/$DSH_TUI_PACKAGE" \
+    > "/root/.dsh/profiles/tui/node_modules/$DSH_TUI_PACKAGE"
+printf '%s\n' "/usr/local/lib/node_modules/$DSH_TUI_PACKAGE" \
+    > "/root/.dsh/profiles/tui/.dsh-module-fallback/node_modules/$DSH_TUI_PACKAGE"
+# Compose it, then actually boot it.
+#
+# --dump-config only composes the configuration; it does not import a single
+# module, so it reported success on a tree that could not load at all on the
+# device. Booting with stdin at /dev/null makes the loader import every plugin
+# and then lets the terminal app exit on its own, which is the check that would
+# have caught both failures. The result is reported as the phase token at the
+# end: an `exit 1` here would not stop the build on its own.
 tui_ok=1
 node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
     --profile tui --dump-config >/dev/null 2>&1 || {
@@ -205,6 +233,14 @@ node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js 
 test -d "/usr/local/lib/node_modules/$DSH_TUI_PACKAGE" || {
     echo "error: the tui bundle was not staged into the guest"; tui_ok=0
 }
+node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js \
+    --profile tui </dev/null >/dev/null 2>/tmp/tui-boot.err
+if grep -qE "plugin tree failed to load|ERR_MODULE_NOT_FOUND|Cannot find package" /tmp/tui-boot.err; then
+    echo "error: the tui profile loaded but its plugin tree could not be imported:"
+    grep -E "Cannot find package|failed to import loader entry" /tmp/tui-boot.err | head -n 6
+    tui_ok=0
+fi
+rm -f /tmp/tui-boot.err
 echo "tui profile: bundles=\$(node -e 'try{console.log(require("/root/.dsh/profiles/tui/package.json").dsh.profile.bundles.join(","))}catch(e){console.log("?")}')  ok=\$tui_ok"
 # Home-level layer: applies to every profile (see rootfs/overlay/.../home.patch.yml).
 install -m 0644 /usr/local/share/dsh/home.patch.yml /root/.dsh/cordis.patch.yml
