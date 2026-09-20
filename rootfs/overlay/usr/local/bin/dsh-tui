@@ -56,6 +56,52 @@ export DEEPSEEK_BASE_URL
 : "${DSH_PERMISSION_MODE:=danger-full-access}"
 export DSH_PERMISSION_MODE
 
+# Install/refresh the agent presets the user dropped into the app's Documents.
+#
+# Nothing here comes from the network and nothing here is baked into the image:
+# the private preset (persona + authorization registry + tools) is pushed over
+# USB into the app's Documents folder, and iSH exposes that folder to the guest
+# as a `real` mount (its path is in /proc/ish/documents; the same mechanism the
+# iSH themes screen documents). The tarball is compared by sha256 against the
+# installed marker, so this is a no-op unless the user actually pushed a new
+# one. A missing file, an unmountable directory or a bad archive must never keep
+# the terminal from starting, hence the `|| true` everywhere.
+PRESET_DEST="$DSH_HOME/.agent-presets/security"
+PRESET_MARK="$DSH_HOME/.agent-presets/.installed-sha"
+HOST_DOCS_MNT=/mnt/host-documents
+
+# busybox tar handles gzip itself, but the guest's applet set is not something
+# this script should assume: fall back to piping gzip through plain tar.
+unpack_preset() {
+    tar xzf "$1" -C "$PRESET_DEST" 2>/dev/null && return 0
+    gzip -dc "$1" 2>/dev/null | tar xf - -C "$PRESET_DEST" 2>/dev/null && return 0
+    return 1
+}
+
+if [ -r /proc/ish/documents ]; then
+    host_docs=$(cat /proc/ish/documents 2>/dev/null || true)
+    if [ -n "$host_docs" ]; then
+        mkdir -p "$HOST_DOCS_MNT" 2>/dev/null || true
+        if mount -t real "$host_docs" "$HOST_DOCS_MNT" 2>/dev/null; then
+            if [ -f "$HOST_DOCS_MNT/dsh-preset.tar.gz" ]; then
+                want=$(cat "$HOST_DOCS_MNT/dsh-preset.sha256" 2>/dev/null | tr -d ' \r\n' || true)
+                have=$(cat "$PRESET_MARK" 2>/dev/null | tr -d ' \r\n' || true)
+                if [ -n "$want" ] && [ "$want" != "$have" ]; then
+                    mkdir -p "$PRESET_DEST" 2>/dev/null || true
+                    if unpack_preset "$HOST_DOCS_MNT/dsh-preset.tar.gz"; then
+                        printf '%s\n' "$want" >"$PRESET_MARK" 2>/dev/null || true
+                        printf '\033[1;32mpreset installed: %s (%s)\033[0m\n' "$PRESET_DEST" "$(printf '%s' "$want" | cut -c1-12)"
+                        sleep 1
+                    else
+                        printf '\033[1;33mpreset archive could not be unpacked; keeping the previous one\033[0m\n'
+                    fi
+                fi
+            fi
+            umount "$HOST_DOCS_MNT" 2>/dev/null || true
+        fi
+    fi
+fi
+
 # stderr is mirrored into a file as well: the TUI owns stdout/stdin for its
 # rendering, and when it fails to start the reason lands on stderr, which no
 # part of this app captures. Keeping a copy means a failure on the device can be
