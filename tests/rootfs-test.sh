@@ -95,13 +95,13 @@ kill $MOCK_PID 2>/dev/null
 sed 's/^/     /' "$WORK/headless.txt" | tail -3
 check "headless answer streamed from mock server" grep -q 'MOCK-REPLY-7f3a' "$WORK/headless.txt"
 
-echo "== dsh-cli: the terminal front door loops headless with --resume"
-# dsh ships no terminal UI, so /usr/local/bin/dsh-cli wraps the one-shot
-# headless form in a loop and carries the session id forward with --resume.
-# Two turns through a pipe prove both halves: the loop repeats, and the second
-# turn lands on the first turn's session instead of starting another one --
-# which is exactly what the reply text alone cannot show, because a fresh
-# session would answer with the same marker.
+echo "== dsh-cli: the terminal front door over the one-shot headless form"
+# dsh ships no terminal UI, and every released dsh-headless creates a fresh
+# session per run with no way to name one (no `--resume` in 0.1.0-rc.7 through
+# 0.1.5-rc.2). So dsh-cli carries the conversation itself: two turns through a
+# pipe must produce two runs and leave both exchanges in the transcript. The
+# reply text cannot show that, because every turn gets the same mock marker.
+rm -f "$WORK/fakefs/data/root/.dsh/.cli-transcript"
 sessions_before=$(guest 'ls -1d /root/.dsh/sessions/*/session-* 2>/dev/null | wc -l' | tr -d ' \n')
 node "$HERE/mock-deepseek.mjs" "$MOCK_PORT" > "$WORK/mock-cli.log" 2>&1 &
 MOCK_PID=$!
@@ -110,11 +110,14 @@ guest "export HOME=/root DEEPSEEK_API_KEY=test DEEPSEEK_BASE_URL=http://127.0.0.
        printf 'Say hi.\nsecond turn\nexit\n' | dsh-cli" > "$WORK/cli.txt"
 kill $MOCK_PID 2>/dev/null
 sessions_after=$(guest 'ls -1d /root/.dsh/sessions/*/session-* 2>/dev/null | wc -l' | tr -d ' \n')
+transcript="$WORK/fakefs/data/root/.dsh/.cli-transcript"
 sed 's/^/     /' "$WORK/cli.txt" | tail -6
-check "dsh-cli prints its prompt"      grep -q 'dsh> ' "$WORK/cli.txt"
-check "dsh-cli answers the first turn" grep -q 'MOCK-REPLY-7f3a' "$WORK/cli.txt"
-check "dsh-cli reports the session id" grep -q 'session-' "$WORK/cli.txt"
-check "dsh-cli resumed instead of starting over" test "$(( ${sessions_after:-0} - ${sessions_before:-0} ))" -eq 1
+check "dsh-cli prints its prompt"        grep -q 'dsh> ' "$WORK/cli.txt"
+check "dsh-cli answers the first turn"   grep -q 'MOCK-REPLY-7f3a' "$WORK/cli.txt"
+check "dsh-cli ran a session per turn"   test "$(( ${sessions_after:-0} - ${sessions_before:-0} ))" -eq 2
+check "dsh-cli kept the first exchange"  grep -q 'User: Say hi.' "$transcript"
+check "dsh-cli kept the second exchange" grep -q 'User: second turn' "$transcript"
+check "dsh-cli kept the answers too"     grep -q 'Assistant: MOCK-REPLY-7f3a' "$transcript"
 
 echo "== host bridge: agent calls device_info through a stub bridge"
 BRIDGE_TOKEN="stub-token-$$"
