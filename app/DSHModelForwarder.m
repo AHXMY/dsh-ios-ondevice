@@ -251,6 +251,8 @@ static void DSHReleaseForwardSlot(void) {
 /// Requests accepted and not yet finished, swept for the ones that were lost.
 @property (nonatomic, strong) NSMutableArray<DSHForwardConnection *> *live;
 @property (nonatomic, strong) NSLock *liveLock;
+/// Ticks every few seconds and puts the listener back if the platform took it.
+@property (nonatomic, strong) dispatch_source_t watchdog;
 @end
 
 @implementation DSHModelForwarder
@@ -322,6 +324,7 @@ static void DSHReleaseForwardSlot(void) {
         self.running = YES;
         [DSHHarness.shared.log append:[NSString stringWithFormat:
             @"[dsh-ios] model forwarder listening on 127.0.0.1:%u -> %@", self.port, self.upstream]];
+        [self startWatchdog];
         return YES;
     }
 }
@@ -373,6 +376,74 @@ static void DSHReleaseForwardSlot(void) {
 
 - (NSString *)baseURLString {
     return self.running ? [NSString stringWithFormat:@"http://127.0.0.1:%u", self.port] : nil;
+}
+
+#pragma mark - Surviving the platform
+
+/// Re-arm only when the listener is really gone, and record which check said so.
+///
+/// The reason matters as much as the fix: "the platform took our socket" and "we
+/// never bound one" look identical from the guest, and only the app can tell
+/// them apart after the fact.
+- (void)ensureListening {
+    if (!self.running) {
+        [self rearmWithReason:@"not running"];
+        return;
+    }
+    if (self.listenFD < 0) {
+        [self rearmWithReason:@"no listening fd"];
+        return;
+    }
+    // The port is ours, so it must NOT be bindable by anyone else. If a probe
+    // can take it, our listener is gone -- this is the same check the allocator
+    // uses to pick a port, which is why a listener that still exists cannot
+    // false-positive here.
+    if ([DSHPortAllocator isLoopbackPortFree:self.port]) {
+        [self rearmWithReason:[NSString stringWithFormat:@"port %u was no longer bound", self.port]];
+        return;
+    }
+}
+
+- (void)rearmWithReason:(NSString *)reason {
+    uint16_t previous = self.port;
+    [DSHHarness.shared.log append:[NSString stringWithFormat:
+        @"[dsh-ios] model forwarder watchdog: re-arming (%@)", reason]];
+    [self stop];
+    if (![self start]) {
+        [DSHHarness.shared.log append:[NSString stringWithFormat:
+            @"[dsh-ios] model forwarder watchdog: re-arm FAILED (%@, port %u)", reason, previous]];
+        return;
+    }
+    if (previous != 0 && self.port != previous) {
+        [DSHHarness.shared.log append:[NSString stringWithFormat:
+            @"[dsh-ios] model forwarder watchdog: now on port %u, was %u; the guest is still pointed at %u",
+            self.port, previous, previous]];
+    }
+}
+
+/// Check the listener every few seconds for the life of the process.
+///
+/// A foreground hook is not enough on its own. Measured on this device: the
+/// forwarder was logged listening at +0.07s after a launch, and by +71s the
+/// guest's own probe was getting ECONNREFUSED from it -- with no `stop` and no
+/// foreground event anywhere in the app log, so whatever closed that socket
+/// never told this class. A timer that asks the kernel instead of waiting to be
+/// notified does not care which layer closed it: on the next tick after the app
+/// gets any CPU at all, the listener is back, and the harness retry policy
+/// covers the few seconds in between.
+- (void)startWatchdog {
+    if (self.watchdog != nil)
+        return;
+    self.watchdog = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(self.watchdog, ^{ [weakSelf ensureListening]; });
+    // 5s period, 1s leeway: cheap enough to leave running, short enough that a
+    // torn-down listener is back before a turn gives up on it.
+    dispatch_source_set_timer(self.watchdog,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
+                              (uint64_t)(5 * NSEC_PER_SEC),
+                              (uint64_t)(1 * NSEC_PER_SEC));
+    dispatch_resume(self.watchdog);
 }
 
 - (NSDictionary<NSString *, NSString *> *)guestEnvironment {

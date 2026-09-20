@@ -35,6 +35,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)start;
 /// Stop and start again on the same port; call when the app returns to the foreground.
 - (void)restart;
+/// Re-arm only if the listener is actually gone, and say why in the app log.
+///
+/// This is the method callers should use. `restart` closes a listener that may
+/// be perfectly healthy and carrying a request, so it is left for explicit
+/// recovery; `ensureListening` is idempotent and safe to call from every
+/// lifecycle hook and from the watchdog.
+- (void)ensureListening;
 - (void)stop;
 
 /// Environment for dsh-serve (empty while stopped).

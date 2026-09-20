@@ -228,24 +228,54 @@ fi
 # crash or memory report anywhere (the app never dies). Each round restarts the
 # harness in place instead, and re-resolves the resume target so the conversation
 # comes back with it. `@` still receives whatever arguments the caller passed.
-# Model-path watchdog.
+# Model-path sampler.
 #
 # The harness reaches the model through the app's loopback forwarder. When that
-# hop is down every request fails with TRANSPORT and the terminal just says
-# "retrying model request 5/5" -- with no crash, no memory report and nothing in
-# the session log beyond the failure itself. So sample the hop in the background
-# and record only the transitions, with the errno: that is the one piece of
-# evidence neither the app nor the harness can produce after the fact.
-# `node` is the right probe here because it is guaranteed present (it is the
-# harness runtime) and it reports the exact error code.
+# hop breaks, every request fails with TRANSPORT and the terminal reports
+# "retrying model request" until the retry budget is gone -- no crash, no memory
+# report, nothing in the session log except the failure.
+#
+# A transitions-only log could not answer the question that actually mattered:
+# whether the hop breaks while the app is in the foreground. It recorded "up"
+# once and one "down", and both readings were consistent with the app having
+# been suspended in between. So this samples every cycle and writes every
+# sample, and it makes a real HTTP request rather than a bare connect, because
+# "the port accepts" and "the round trip returns" are different failures:
+#
+#   http 404   the whole path works (the upstream answers, so the proxy relayed)
+#   err ECONNREFUSED   nothing is listening (or the refusal came back from the
+#                      platform layer, which is what a torn-down socket looks
+#                      like from inside the guest)
+#   timeout / stuck    the connect or the request never completed -- the shape
+#                      the terminal shows as a turn that hangs instead of dying
+#
+# `node` is guaranteed present (it is the harness runtime) and reports the exact
+# error code. The port comes from the base URL the app handed this session, not
+# a constant: if the app ever re-arms on a different port, a hardcoded probe
+# would report a failure the harness does not have, or miss one it does.
+#
+# The file is trimmed every cycle, because this runs for the life of a session
+# on a device nobody logs into.
+declare_probe_port() {
+    case "$DEEPSEEK_BASE_URL" in
+        *:*) printf '%s' "${DEEPSEEK_BASE_URL##*:}" ;;
+        *) printf '31337' ;;
+    esac
+}
 probe_once() {
-    node -e '
-      const net = require("net");
-      const s = net.connect(31337, "127.0.0.1");
-      s.setTimeout(3000);
-      s.on("connect", () => { console.log("up"); s.destroy(); });
-      s.on("timeout", () => { console.log("down ETIMEDOUT"); s.destroy(); });
-      s.on("error", (e) => { console.log("down " + (e.code || e.message)); });
+    DSH_PROBE_PORT="$1" node -e '
+      const http = require("http");
+      const port = Number(process.env.DSH_PROBE_PORT || 31337);
+      let settled = false;
+      const done = (line) => { if (!settled) { settled = true; console.log(line); process.exit(0); } };
+      const req = http.request({ host: "127.0.0.1", port, path: "/", method: "GET", timeout: 4000 }, (res) => {
+        res.resume();
+        done("http " + res.statusCode);
+      });
+      req.on("timeout", () => { done("timeout"); req.destroy(); });
+      req.on("error", (e) => { done("err " + (e.code || e.message)); });
+      req.end();
+      setTimeout(() => done("stuck"), 6000);
     ' 2>/dev/null
 }
 # One probe at a time: a heartbeat file older than 60s means the previous one died.
@@ -254,16 +284,19 @@ _now=$(date +%s)
 _prev=$(cat "$_hb" 2>/dev/null || echo 0)
 if [ $((_now - _prev)) -ge 60 ]; then
     (
-        last=""
+        port=$(declare_probe_port)
+        printf '%s  sampler start  port=%s  base=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$port" "$DEEPSEEK_BASE_URL" >>"$DSH_HOME/model-path.log" 2>/dev/null || true
         while :; do
             date +%s >"$_hb" 2>/dev/null || true
-            now=$(probe_once)
-            [ -z "$now" ] && now="down unknown"
-            if [ "$now" != "$last" ]; then
-                printf '%s  forwarder %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$now" >>"$DSH_HOME/model-path.log" 2>/dev/null || true
-                last="$now"
+            now=$(probe_once "$port")
+            [ -z "$now" ] && now="no-output"
+            printf '%s  port=%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$port" "$now" >>"$DSH_HOME/model-path.log" 2>/dev/null || true
+            # Keep the tail only: this loop runs for the life of the session.
+            if [ -f "$DSH_HOME/model-path.log" ]; then
+                tail -n 240 "$DSH_HOME/model-path.log" >"$DSH_HOME/model-path.log.tmp" 2>/dev/null &&
+                    mv "$DSH_HOME/model-path.log.tmp" "$DSH_HOME/model-path.log" 2>/dev/null
             fi
-            sleep 20
+            sleep 15
         done
     ) &
 fi
