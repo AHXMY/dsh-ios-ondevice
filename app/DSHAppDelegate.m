@@ -66,7 +66,16 @@ static void DSHRepairPreferencesPollutedByLegacyTests(void) {
     [DSHHarness.shared noteForeground];
     // Suspension closes this app's sockets; without re-arming, the guest's model
     // requests are refused from then on and the terminal retries forever.
-    [DSHModelForwarder.shared restart];
+    [DSHModelForwarder.shared ensureListening];
+}
+
+- (void)applicationDidBecomeActive:(UIApplication *)application {
+    // The same check from the other lifecycle door: a resume can arrive as
+    // `didBecomeActive` (unlock, Control Center dismissal) without a preceding
+    // `willEnterForeground`, and this is the hook that always fires. It is
+    // idempotent -- it re-arms only when the listener is genuinely gone -- so
+    // calling it on both paths costs nothing.
+    [DSHModelForwarder.shared ensureListening];
 }
 
 @end
