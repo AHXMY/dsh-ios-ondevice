@@ -1,0 +1,10 @@
+# generated
+build/
+*.xcresult
+xcuserdata/
+DSH.xcodeproj/project.xcworkspace/xcuserdata/
+ish-arm64/build-arm64-release/
+ish-arm64/build/
+ish-arm64/e2e_out/
+ish-arm64/deps/build/
+.DS_Store

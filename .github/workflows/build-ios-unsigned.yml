@@ -1,0 +1,110 @@
+# 在 GitHub 的 macOS 机器上编译 DSHIOS（everettjf/dsh-ios）
+# 产物：未签名 ipa —— 下载后用 Sideloadly + 免费 Apple ID 签名装进 iPhone/iPad。
+#
+# 这个 App 做的事：内嵌 iSH-ARM64（用户态 Linux 模拟器）→ 启动内置 Alpine →
+# 里面跑 Node 22 + 原版 @deepseek-ai/dsh → 起 dsh web → WKWebView 显示官方 Web UI。
+# 全程在手机上，不连电脑、不连服务器。
+
+name: build-dshios-unsigned
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    steps:
+      - name: 拉代码
+        uses: actions/checkout@v4
+
+      - name: 装构建工具（iSH 的 guest VDSO 需要 LLVM 的链接器）
+        run: |
+          brew install lld meson ninja
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          ld.lld --version
+          meson --version
+          ninja --version
+
+      - name: 查工具链版本
+        run: |
+          xcodebuild -version
+          ruby -v
+          gem list xcodeproj || true
+          node -v
+          npm -v
+
+      - name: 补 ruby 的 xcodeproj（生成 Xcode 工程要用）
+        run: |
+          gem install xcodeproj --no-document || true
+          gem list xcodeproj
+
+      - name: 编译 iSH-ARM64 模拟器
+        run: |
+          make emulator
+          ls -l ish-arm64/build-arm64-release/ish
+          ls -l ish-arm64/build-arm64-release/tools/fakefsify
+
+      - name: 构建 guest 根文件系统（Alpine + Node 22 + 原版 dsh）
+        run: |
+          make rootfs
+          ls -lh build/root.tar.gz
+
+      - name: 生成 Xcode 工程
+        run: |
+          make project
+          ls -1 DSH.xcodeproj
+
+      - name: 编译 App（关闭签名）
+        run: |
+          set +e
+          xcodebuild \
+            -project DSH.xcodeproj \
+            -scheme DSH \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/dd \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DSH_DEVELOPMENT_TEAM="" \
+            > build/xcodebuild.log 2>&1
+          CODE=$?
+          set -e
+          echo "xcodebuild exit code: $CODE"
+          if [ "$CODE" -ne 0 ]; then
+            echo "======== 错误行 ========"
+            grep -nE 'error:|fatal error|BUILD FAILED|build commands failed|Undefined symbol' build/xcodebuild.log | head -n 120 || true
+            echo "======== 后 150 行 ========"
+            tail -n 150 build/xcodebuild.log
+            exit "$CODE"
+          fi
+          tail -n 15 build/xcodebuild.log
+
+      - name: 打成一个未签名的 ipa
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find build/dd/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          echo "app: $APP_PATH"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "没找到 .app，把目录摊开："
+            find build/dd/Build/Products -maxdepth 3 -name '*.app' || true
+            exit 1
+          fi
+          rm -rf Payload DSHIOS-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry DSHIOS-unsigned.ipa Payload
+          ls -lh DSHIOS-unsigned.ipa
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSHIOS-unsigned-ipa
+          path: DSHIOS-unsigned.ipa
+          retention-days: 14
