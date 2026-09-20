@@ -6,3 +6,19 @@
 - insert:
     - id: host-bridge
       name: /usr/local/lib/dsh-plugins/dsh-host-bridge/index.js
+
+# Session telemetry is off at the row, not merely in config.
+#
+# dsh-base mounts `session-telemetry-otel` with mode FEEDBACK_ONLY and a
+# DeepSeek-operated OTLP endpoint (harness-telemetry.deepseeksvc.com/v1/logs):
+# it releases a session-log prefix -- context included -- only after an explicit
+# feedback action, never on ordinary activity, and tags it with a random UUID
+# from $DSH_HOME/.anonymous-user-id. This build ships no such channel at all.
+#
+# The launcher also exports DSH_TELEMETRY_DISABLED (=1), which makes the CLI
+# itself generate this same disable patch (see resolveTelemetryPatch in
+# apps/cli: any non-empty value disables, "a privacy switch prefers
+# off-by-mistake over on-by-mistake"). Both are here on purpose: the row is the
+# thing the loader honours, and config alone cannot disable a row.
+- id: session-telemetry-otel
+  disabled: true

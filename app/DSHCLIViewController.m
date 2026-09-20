@@ -98,8 +98,14 @@
 /// a fresh session as soon as one ends, so a restored preference would drop the
 /// user into a plain login shell the moment they type `exit`. Leaving it at
 /// `dsh-tui` is what makes this build terminal-only -- every session, now and after
-/// a relaunch, is the harness. `!` inside the TUI is the way out to a
-/// shell.
+/// a relaunch, is the harness.
+///
+/// That also means there is no plain shell prompt in this build. An earlier
+/// version of this comment claimed "`!` inside the TUI is the way out to a
+/// shell", which the terminal app's own README contradicts: it lists "no local
+/// `!` shell mode" among what the TUI does not provide. Exiting the TUI gets a
+/// fresh harness session, not a shell; work that needs a shell goes through the
+/// agent's own shell tool.
 - (void)handOffToTerminal {
     if (self.handedOff)
         return;

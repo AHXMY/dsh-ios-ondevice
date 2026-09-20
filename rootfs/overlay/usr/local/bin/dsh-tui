@@ -56,6 +56,19 @@ export DEEPSEEK_BASE_URL
 : "${DSH_PERMISSION_MODE:=danger-full-access}"
 export DSH_PERMISSION_MODE
 
+# Session telemetry: off.
+#
+# dsh-base mounts `session-telemetry-otel` pointed at a DeepSeek-operated OTLP
+# collector with mode FEEDBACK_ONLY: ordinary activity is never captured, but an
+# explicit feedback action would release the session-log prefix (context
+# included) tagged with the anonymous UUID in $DSH_HOME/.anonymous-user-id. This
+# build ships no reporting channel, so the switch is set. The CLI turns any
+# non-empty value into a hard disable patch for that row -- "a privacy switch
+# prefers off-by-mistake over on-by-mistake" -- and the home-layer patch
+# disables the same row again for anything that skips that path.
+: "${DSH_TELEMETRY_DISABLED:=1}"
+export DSH_TELEMETRY_DISABLED
+
 # Install/refresh the agent presets the user dropped into the app's Documents.
 #
 # Nothing here comes from the network and nothing here is baked into the image:
