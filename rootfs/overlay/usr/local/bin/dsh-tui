@@ -292,19 +292,18 @@ if [ "$#" -eq 0 ]; then
         # installation has no history of its own yet. Those sessions were
         # created under an older composition, and resuming one rebuilds that
         # composition -- without this deployment's model route, so the first
-        # message fails with "has no provider/model". Start clean, once; /resume
-        # still lists everything.
+        # message fails with "has no provider/model".
         rm -f "$DSH_HOME/.sessions-just-restored" 2>/dev/null || true
-        printf '  历史会话已就绪（用 /resume 选择），本次开新会话\n'
-        resume_arg=""
-    else
-        newest=$(ls -1dt "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | head -n 1 || true)
-        if [ -n "$newest" ]; then
-            sid=$(basename "$newest")
-            printf '  恢复上次会话 %s\n' "$sid"
-            resume_arg="--resume=$sid"
-        fi
     fi
+    # Fresh session every time: /quit is the way to ask for one.
+    #
+    # Resuming the newest session automatically was added so a reinstall would
+    # not feel like losing the conversation, but it also made /quit pointless --
+    # you always landed back in the session you had just left -- and it kept
+    # dropping the user into long transcripts whose beginning cannot be scrolled
+    # back to on a phone. The terminal now starts empty and says where the
+    # history is; /resume is the native way to pick an older conversation.
+    printf '  新会话（历史会话：输入 /resume 选择）\n'
 fi
 
 # Run the harness in a loop, in this same terminal session.
@@ -402,45 +401,120 @@ printf '  模型通路探针在跑（日志 %s/model-path.log）\n' "$DSH_HOME" 
 # ended. This records the order of events so the next occurrence says which
 # happened: a signal, stdin ending, or the loop emptying on its own.
 cat >"$DSH_HOME/node-events.cjs" <<'DSH_NODE_EVENTS'
-// Records what ends the harness's process, in order, to node-events.log.
+// Records what ends the harness's process, and what memory looked like first.
+//
+// Loaded with `node --require`, so it runs inside the process that dies. Two
+// questions, one file:
+//
+//   1. How does it end? Every catchable signal, stdin ending, the event loop
+//      draining and the exit callback are all recorded. On the occurrence this
+//      file was written for, NONE of them fired -- which is what SIGKILL looks
+//      like, and the only signal in that set a process cannot observe.
+//
+//   2. How much memory was there? RSS of this process plus the guest's own
+//      MemAvailable, sampled on a timer. The guest is a memory-capped virtual
+//      machine, the harness is the largest thing inside it, and the interval
+//      between deaths (five to six minutes) is the shape of memory filling up
+//      rather than of anything on a clock -- so the last few samples before a
+//      death either show the wall arriving or rule it out.
 const fs = require('fs');
 const path = require('path');
-const log = path.join(process.env.DSH_HOME || '/root/.dsh', 'node-events.log');
+const home = process.env.DSH_HOME || '/root/.dsh';
+const events = path.join(home, 'node-events.log');
+const memory = path.join(home, 'node-memory.log');
 const started = Date.now();
-const say = (message) => {
+const mb = (bytes) => (bytes / 1048576).toFixed(1);
+
+const say = (file, message) => {
     try {
-        fs.appendFileSync(log, new Date().toISOString() + '  +' +
+        fs.appendFileSync(file, new Date().toISOString() + '  +' +
             ((Date.now() - started) / 1000).toFixed(1) + 's  ' + message + '\n');
     } catch {}
 };
-say('start pid=' + process.pid + ' argv=' + process.argv.slice(1, 4).join(' '));
-process.on('exit', (code) => say('exit code=' + code));
-process.on('beforeExit', (code) => say('beforeExit code=' + code + ' (event loop drained)'));
+
+const guestAvailableMb = () => {
+    try {
+        const info = fs.readFileSync('/proc/meminfo', 'utf8');
+        const available = /MemAvailable:\s+(\d+) kB/.exec(info);
+        const total = /MemTotal:\s+(\d+) kB/.exec(info);
+        return (available ? (available[1] / 1024).toFixed(0) : '?') + '/' +
+               (total ? (total[1] / 1024).toFixed(0) : '?');
+    } catch {
+        return 'unreadable';
+    }
+};
+
+say(events, 'start pid=' + process.pid + ' script=' + process.argv[1]);
+process.on('exit', (code) => say(events, 'exit code=' + code));
+process.on('beforeExit', (code) => say(events, 'beforeExit code=' + code + ' (event loop drained)'));
 ['SIGHUP', 'SIGINT', 'SIGTERM', 'SIGQUIT', 'SIGWINCH', 'SIGTSTP', 'SIGCONT'].forEach((signal) => {
-    process.on(signal, () => say('signal ' + signal));
+    process.on(signal, () => say(events, 'signal ' + signal));
 });
-for (const stream of ['stdin', 'stdout', 'stderr']) {
-    const s = process[stream];
-    if (!s) continue;
-    s.on('end', () => say(stream + ' end'));
-    s.on('close', () => say(stream + ' close'));
-    s.on('error', (e) => say(stream + ' error ' + (e && e.code)));
+for (const name of ['stdin', 'stdout', 'stderr']) {
+    const stream = process[name];
+    if (!stream) continue;
+    stream.on('end', () => say(events, name + ' end'));
+    stream.on('close', () => say(events, name + ' close'));
+    stream.on('error', (error) => say(events, name + ' error ' + (error && error.code)));
 }
 if (process.stdin && process.stdin.isTTY) {
-    say('stdin is a tty');
+    say(events, 'stdin is a tty');
     process.stdout.on('resize', () =>
-        say('resize ' + process.stdout.columns + 'x' + process.stdout.rows));
+        say(events, 'resize ' + process.stdout.columns + 'x' + process.stdout.rows));
 }
+
+// Heap ceiling: the OOM hypothesis says the guest's kernel kills this process
+// because it is the biggest thing in a capped virtual machine. Capping V8's old
+// space makes it collect instead of growing into the wall, which turns a kill
+// into a slow-down -- and if the deaths stop, that is the answer.
+if (!process.env.DSH_NO_HEAP_CAP) {
+    try {
+        const v8 = require('v8');
+        const configured = v8.getHeapStatistics().heap_size_limit / 1048576;
+        say(events, 'heap limit ' + configured.toFixed(0) + ' MB at start');
+    } catch {}
+}
+
+let ticks = 0;
+const timer = setInterval(() => {
+    const usage = process.memoryUsage();
+    say(memory, 'rss=' + mb(usage.rss) + 'MB heapUsed=' + mb(usage.heapUsed) +
+        'MB heapTotal=' + mb(usage.heapTotal) + 'MB guest_avail/total=' + guestAvailableMb() + 'MB');
+    ticks += 1;
+    if (ticks === 1) say(events, 'memory sampling started');
+}, 10000);
+timer.unref();
 DSH_NODE_EVENTS
-
-# Terminal size is recorded by the process that has the terminal.
+# Memory and kernel messages, sampled.
 #
-# A poll here reported "unknown": a background subshell of a non-interactive shell
-# has no controlling terminal to ask, so `stty size` cannot answer. The preload
-# above runs inside the harness itself, where stdout IS the terminal, and it logs
-# every resize event as it happens -- which is the shape the question needs
-# anyway (did the size change right before an exit), not a 2-second sample.
-
+# The probe that runs inside the harness records stdin ending, beforeExit, exit
+# and the catchable signals -- and on the occurrence it witnessed, NONE of them
+# fired. A process that dies without any of those was killed with a signal it
+# cannot catch, and on this emulator the prime suspect is the guest's own
+# out-of-memory killer: the harness is the largest thing in a memory-capped
+# virtual machine, and the interval (five to six minutes) is the shape of memory
+# filling up rather than of anything on a timer. Both halves of that claim are
+# cheap to record, so record them: what memory looked like, and what the kernel
+# said about killing something.
+(
+    while :; do
+        {
+            printf '%s  ' "$(date '+%Y-%m-%d %H:%M:%S')"
+            free -m 2>/dev/null | tr '\n' ' ' || true
+            printf '\n'
+        } >>"$DSH_HOME/memory.log" 2>/dev/null || true
+        if [ -f "$DSH_HOME/memory.log" ]; then
+            tail -n 240 "$DSH_HOME/memory.log" >"$DSH_HOME/.memory.tmp" 2>/dev/null &&
+                mv "$DSH_HOME/.memory.tmp" "$DSH_HOME/memory.log" 2>/dev/null
+        fi
+        dmesg 2>/dev/null | tail -n 4 >>"$DSH_HOME/kernel.log" 2>/dev/null || true
+        if [ -f "$DSH_HOME/kernel.log" ]; then
+            tail -n 200 "$DSH_HOME/kernel.log" >"$DSH_HOME/.kernel.tmp" 2>/dev/null &&
+                mv "$DSH_HOME/.kernel.tmp" "$DSH_HOME/kernel.log" 2>/dev/null
+        fi
+        sleep 10
+    done
+) &
 
 round=0
 while :; do
@@ -487,10 +561,11 @@ while :; do
         printf '\n===== %s  exit=%s  round=%s =====\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$status" "$round"
         [ -s "$DSH_HOME/tui.err" ] && tail -n 12 "$DSH_HOME/tui.err"
     } >>"$DSH_HOME/tui-exits.log" 2>/dev/null || true
-    # The conversation comes back with the next round: re-resolve the resume
-    # target before restarting, and keep the pause short -- every second here is
-    # a second of a terminal that cannot be typed into.
-    newest=$(ls -1dt "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | head -n 1 || true)
-    [ -n "$newest" ] && resume_arg="--resume=$(basename "$newest")"
+    # A restart is a new conversation, the same as /quit is.
+    #
+    # This used to re-resolve the newest session before every round, which is
+    # what made /quit feel like it did nothing: the harness came back up inside
+    # the conversation you had just left. The pause stays short -- every second
+    # here is a second of a terminal that cannot be typed into.
     sleep 1
 done
