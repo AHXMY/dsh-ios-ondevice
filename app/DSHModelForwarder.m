@@ -2,19 +2,236 @@
 //  DSHModelForwarder.m
 //  DSH
 //
+//  A loopback reverse proxy from the guest to the real model endpoint, because
+//  iOS refuses the guest's own outbound connects: the emulator's socket bridge
+//  reaches loopback and nothing else. dsh reaches the model through
+//  DEEPSEEK_BASE_URL=http://127.0.0.1:<port> and this forwards it.
+//
+//  Two bugs lived in the first version of this file, and on the device they
+//  showed up as "retrying model request" followed by the app vanishing to the
+//  home screen with no crash report:
+//
+//  1. It was a buffering proxy. `dataTaskWithRequest:completionHandler:` waits
+//     for the *entire* response before writing a single byte back, but the
+//     request dsh sends is streamed (SSE). The model would sit there producing
+//     tokens while this proxy held them all back, dsh saw no first byte, timed
+//     out, retried -- and every retry opened another connection holding another
+//     complete upstream response in memory. That grows without bound: sockets,
+//     threads, NSData buffers. Responses are now relayed as chunks the moment
+//     they arrive, so the guest sees the first byte immediately and one request
+//     is one in-flight upstream request.
+//
+//  2. It never set SO_NOSIGPIPE. Writing to a socket whose peer has already
+//     closed raises SIGPIPE, and iOS terminates the process on SIGPIPE -- no
+//     exception, no ObjC crash report, just a dead app. A retrying client
+//     guarantees that write: it closes the timed-out connection while the
+//     response is still being written. Both the listener and every accepted
+//     socket now carry SO_NOSIGPIPE, and EPIPE is handled as an ordinary
+//     "client went away" instead of killing the process.
+//
+//  A concurrency ceiling is enforced as well: past it a request is refused
+//  immediately rather than allowed to queue up into another pile.
+//
 
 #import "DSHModelForwarder.h"
 #import "DSHHarness.h"
 #import "DSHPortAllocator.h"
 
 #import <arpa/inet.h>
+#import <errno.h>
 #import <netinet/in.h>
 #import <netinet/tcp.h>
 #import <sys/socket.h>
 #import <unistd.h>
 
-static const NSTimeInterval kForwardTimeout = 180;
+static const NSTimeInterval kForwardTimeout = 300;
+static const NSTimeInterval kForwardResourceTimeout = 3600;
 static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
+/// How many forwarded requests may be in flight at once. The terminal needs one,
+/// a retry may add a second; more than this means something is looping, and
+/// refusing is far better than accumulating sockets until the app is killed.
+static const NSUInteger kMaxConcurrentForwards = 8;
+
+static NSUInteger gActiveForwards = 0;
+static NSLock *gForwardLock = nil;
+
+/// The lock is created on first use rather than by the singleton, so slot
+/// accounting cannot run against a nil lock if a connection ever arrives first.
+static void DSHEnsureForwardLock(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ gForwardLock = [NSLock new]; });
+}
+
+static BOOL DSHTakeForwardSlot(void) {
+    DSHEnsureForwardLock();
+    BOOL granted = NO;
+    [gForwardLock lock];
+    if (gActiveForwards < kMaxConcurrentForwards) {
+        gActiveForwards += 1;
+        granted = YES;
+    }
+    [gForwardLock unlock];
+    return granted;
+}
+
+static void DSHReleaseForwardSlot(void) {
+    DSHEnsureForwardLock();
+    [gForwardLock lock];
+    if (gActiveForwards > 0)
+        gActiveForwards -= 1;
+    [gForwardLock unlock];
+}
+
+#pragma mark - One forwarded request
+
+/// Owns one client socket and the upstream task feeding it.
+///
+/// The fd is closed exactly once, from whichever side finishes first: the
+/// upstream task completing, or a failed write proving the client is gone.
+@interface DSHForwardConnection : NSObject <NSURLSessionDataDelegate>
+@property (nonatomic) int fd;
+@property (nonatomic) BOOL finished;
+@property (nonatomic) BOOL headSent;
+/// YES once this connection holds one of the in-flight slots, so it is given
+/// back exactly once and never for a request that was refused.
+@property (nonatomic) BOOL slotHeld;
+@property (nonatomic, strong, nullable) NSURLSession *session;
+@property (nonatomic, strong, nullable) NSURLSessionDataTask *task;
+@property (nonatomic, copy) NSString *label;
+@end
+
+@implementation DSHForwardConnection
+
+- (instancetype)initWithSocket:(int)fd label:(NSString *)label {
+    if ((self = [super init])) {
+        _fd = fd;
+        _label = label;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_fd >= 0) {
+        close(_fd);
+        _fd = -1;
+    }
+}
+
+/// Send bytes, tolerating a client that has gone away.
+/// @returns NO when nothing more can be written to this client.
+- (BOOL)writeBytes:(const void *)bytes length:(NSUInteger)length {
+    const uint8_t *cursor = bytes;
+    NSUInteger remaining = length;
+    while (remaining > 0) {
+        ssize_t written = send(self.fd, cursor, remaining, 0);
+        if (written > 0) {
+            cursor += written;
+            remaining -= (NSUInteger) written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR)
+            continue;
+        // EPIPE/ECONNRESET: the guest gave up on this request. Ordinary, and
+        // never fatal -- SO_NOSIGPIPE is what keeps it that way.
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)writeString:(NSString *)string {
+    NSData *data = [string dataUsingEncoding:NSUTF8StringEncoding];
+    return [self writeBytes:data.bytes length:data.length];
+}
+
+/// Relay one body chunk in HTTP/1.1 chunked framing. The upstream length is not
+/// known in advance -- that is the whole point of streaming -- so the response
+/// cannot carry Content-Length.
+- (BOOL)writeChunk:(NSData *)data {
+    if (data.length == 0)
+        return YES;
+    if (![self writeString:[NSString stringWithFormat:@"%lx\r\n", (unsigned long) data.length]])
+        return NO;
+    if (![self writeBytes:data.bytes length:data.length])
+        return NO;
+    return [self writeString:@"\r\n"];
+}
+
+- (void)sendHeadWithStatus:(NSInteger)status reason:(NSString *)reason contentType:(NSString *)contentType {
+    if (self.headSent)
+        return;
+    self.headSent = YES;
+    [self writeString:[NSString stringWithFormat:@"HTTP/1.1 %ld %@\r\n", (long) status, reason]];
+    [self writeString:[NSString stringWithFormat:@"Content-Type: %@\r\n", contentType ?: @"application/json"]];
+    [self writeString:@"Transfer-Encoding: chunked\r\n"];
+    [self writeString:@"Cache-Control: no-store\r\n"];
+    [self writeString:@"Connection: close\r\n\r\n"];
+}
+
+- (void)refuseWithStatus:(NSInteger)status reason:(NSString *)reason message:(NSString *)message {
+    [self sendHeadWithStatus:status reason:reason contentType:@"text/plain; charset=utf-8"];
+    [self writeChunk:[message dataUsingEncoding:NSUTF8StringEncoding]];
+    [self finish];
+}
+
+/// Terminate the exchange: end the chunked body, then close the socket once.
+- (void)finish {
+    if (self.finished)
+        return;
+    self.finished = YES;
+    if (!self.headSent)
+        [self sendHeadWithStatus:502 reason:@"Bad Gateway" contentType:@"text/plain; charset=utf-8"];
+    [self writeString:@"0\r\n\r\n"];
+    if (self.fd >= 0) {
+        close(self.fd);
+        self.fd = -1;
+    }
+    [self.task cancel];
+    [self.session invalidateAndCancel];
+    self.session = nil;
+    self.task = nil;
+    if (self.slotHeld) {
+        self.slotHeld = NO;
+        DSHReleaseForwardSlot();
+    }
+}
+
+#pragma mark - NSURLSessionDataDelegate
+
+- (void)URLSession:(NSURLSession *)session
+              dataTask:(NSURLSessionDataTask *)dataTask
+    didReceiveResponse:(NSURLResponse *)response
+     completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
+    NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *) response : nil;
+    NSInteger status = http != nil ? http.statusCode : 200;
+    NSString *reason = [NSHTTPURLResponse localizedStringForStatusCode:status];
+    NSString *contentType = http.allHeaderFields[@"Content-Type"] ?: @"application/json";
+    [self sendHeadWithStatus:status reason:reason.length > 0 ? reason : @"OK" contentType:contentType];
+    completionHandler(NSURLSessionResponseAllow);
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
+    if (![self writeChunk:data]) {
+        // The client is gone; stop pulling from upstream instead of buffering a
+        // response nobody will read.
+        [dataTask cancel];
+        [self finish];
+    }
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    if (error != nil && !self.headSent) {
+        NSString *message = error.localizedDescription ?: @"upstream failed";
+        [DSHHarness.shared.log append:[NSString stringWithFormat:
+            @"[dsh-ios] forward %@ failed: %@", self.label, message]];
+        [self refuseWithStatus:502 reason:@"Bad Gateway" message:message];
+        return;
+    }
+    [self finish];
+}
+
+@end
+
+#pragma mark - The listener
 
 @interface DSHModelForwarder ()
 @property (nonatomic) int listenFD;
@@ -24,7 +241,6 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
 @property (nonatomic, strong) dispatch_queue_t workQueue;
 @property (nonatomic, strong) dispatch_source_t acceptSource;
 @property (nonatomic, strong, readwrite) NSString *upstream;
-@property (nonatomic, strong) NSURLSession *session;
 @end
 
 @implementation DSHModelForwarder
@@ -32,7 +248,10 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
 + (instancetype)shared {
     static DSHModelForwarder *shared;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ shared = [[DSHModelForwarder alloc] init]; });
+    dispatch_once(&once, ^{
+        DSHEnsureForwardLock();
+        shared = [[DSHModelForwarder alloc] init];
+    });
     return shared;
 }
 
@@ -47,11 +266,6 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
         _workQueue = dispatch_queue_create("dsh.model-forwarder.work", DISPATCH_QUEUE_CONCURRENT);
         NSString *override = NSProcessInfo.processInfo.environment[@"DSH_FORWARD_UPSTREAM"];
         _upstream = override.length > 0 ? override : @"https://api.deepseek.com";
-        NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        config.timeoutIntervalForRequest = kForwardTimeout;
-        config.timeoutIntervalForResource = kForwardTimeout;
-        config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-        _session = [NSURLSession sessionWithConfiguration:config];
     }
     return self;
 }
@@ -68,6 +282,9 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
         int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        // Writing to a peer that has closed must return EPIPE, never raise
+        // SIGPIPE -- on iOS that signal terminates the process outright.
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
         // A predictable port keeps http://127.0.0.1:31337 usable as the base URL
         // even if someone types it into the harness settings by hand.
         uint16_t wanted = [DSHPortAllocator freeLoopbackPortStartingAt:31337 span:10];
@@ -132,6 +349,11 @@ static const NSUInteger kMaxRequestBytes = 32 * 1024 * 1024;
     int client = accept(self.listenFD, NULL, NULL);
     if (client < 0)
         return;
+    int one = 1;
+    setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    // Load-bearing: an EPIPE from this socket must be an error return, not a
+    // process-killing signal. A retrying client makes that write certain.
+    setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
     struct timeval tv = { .tv_sec = (int) kForwardTimeout };
     setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
@@ -204,11 +426,25 @@ static NSData *DSHReadRequest(int fd, NSUInteger *headerLength) {
     NSString *path = requestLine.count > 1 ? requestLine[1] : @"/";
     NSData *body = raw.length > headLength ? [raw subdataWithRange:NSMakeRange(headLength, raw.length - headLength)] : [NSData data];
 
+    DSHForwardConnection *connection = [[DSHForwardConnection alloc] initWithSocket:fd
+                                                                             label:[NSString stringWithFormat:@"%@ %@", method, path]];
+    // Refuse rather than queue: past this many in flight, something is looping,
+    // and piling on sockets is what killed the app before. The refusal is logged
+    // so a future storm is visible in Diagnostics instead of silent.
+    if (!DSHTakeForwardSlot()) {
+        [DSHHarness.shared.log append:[NSString stringWithFormat:
+            @"[dsh-ios] forward %@ refused: %lu already in flight", connection.label,
+            (unsigned long) kMaxConcurrentForwards]];
+        [connection refuseWithStatus:503 reason:@"Service Unavailable"
+                             message:@"too many forwarded requests in flight\n"];
+        return;
+    }
+    connection.slotHeld = YES;
+
     NSURLComponents *components = [NSURLComponents componentsWithString:self.upstream];
     NSURL *upstreamURL = [NSURL URLWithString:path relativeToURL:components.URL];
     if (upstreamURL == nil) {
-        [self reply:fd status:502 reason:@"Bad Gateway" contentType:@"text/plain"
-               body:[@"bad upstream path" dataUsingEncoding:NSUTF8StringEncoding]];
+        [connection refuseWithStatus:502 reason:@"Bad Gateway" message:@"bad upstream path\n"];
         return;
     }
 
@@ -231,47 +467,21 @@ static NSData *DSHReadRequest(int fd, NSUInteger *headerLength) {
             continue;
         [request setValue:value forHTTPHeaderField:name];
     }
+    // Relay the upstream body as it arrives, never in one buffered lump.
+    [request setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
 
-    __weak typeof(self) weakSelf = self;
-    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request
-                                                 completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        typeof(self) self = weakSelf;
-        if (self == nil)
-            return;
-        if (error != nil || data == nil) {
-            NSString *message = error.localizedDescription ?: @"upstream failed";
-            [self reply:fd status:502 reason:@"Bad Gateway" contentType:@"text/plain"
-                   body:[message dataUsingEncoding:NSUTF8StringEncoding]];
-            [DSHHarness.shared.log append:[NSString stringWithFormat:
-                @"[dsh-ios] forward %@ %@ failed: %@", method, path, message]];
-            return;
-        }
-        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *) response : nil;
-        NSInteger status = http != nil ? http.statusCode : 200;
-        NSString *contentType = http.allHeaderFields[@"Content-Type"] ?: @"application/json";
-        [self reply:fd status:status reason:@"OK" contentType:contentType body:data];
-    }];
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    config.timeoutIntervalForRequest = kForwardTimeout;
+    config.timeoutIntervalForResource = kForwardResourceTimeout;
+    config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    config.URLCache = nil;
+    config.HTTPShouldUsePipelining = NO;
+
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:connection delegateQueue:nil];
+    connection.session = session;
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:request];
+    connection.task = task;
     [task resume];
-}
-
-- (void)reply:(int)fd status:(NSInteger)status reason:(NSString *)reason contentType:(NSString *)contentType body:(NSData *)body {
-    NSMutableString *head = [NSMutableString string];
-    [head appendFormat:@"HTTP/1.1 %ld %@\r\n", (long) status, reason];
-    [head appendFormat:@"Content-Type: %@\r\n", contentType];
-    [head appendFormat:@"Content-Length: %lu\r\n", (unsigned long) body.length];
-    [head appendString:@"Connection: close\r\n\r\n"];
-    NSMutableData *payload = [[head dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
-    [payload appendData:body];
-    const uint8_t *bytes = payload.bytes;
-    size_t remaining = payload.length;
-    while (remaining > 0) {
-        ssize_t written = send(fd, bytes, remaining, 0);
-        if (written <= 0)
-            break;
-        bytes += written;
-        remaining -= (size_t) written;
-    }
-    close(fd);
 }
 
 @end
