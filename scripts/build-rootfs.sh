@@ -8,6 +8,14 @@
 # Usage: scripts/build-rootfs.sh [--keep-work]
 set -euo pipefail
 
+# Every failure in this script must name its line. Under `set -e` a command that
+# fails inside an assignment (`x="$(...)"`) or inside a `cmd | filter` pipeline
+# kills the script with nothing in the log at all -- which is exactly how a whole
+# CI round got burned on a silent exit: the run ended 62 seconds in with only
+# "make: *** [rootfs] Error 1" and no clue. With this trap the next one reports
+# line number and status.
+trap 'status=$?; printf "\033[1;31mERROR: build-rootfs.sh died at line %s (exit %s)\033[0m\n" "$LINENO" "$status" >&2' ERR
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 ISH_SRC="${ISH_SRC:-$ROOT/ish-arm64}"
@@ -168,21 +176,31 @@ if [ -d payload/usr/local/lib/node_modules/@img ]; then
     done
     [ -z "$missing" ] ||
         die "@img is missing:$missing (this guest loads the musl arm64 pair; check whether npm staged it at all)"
+    # `|| true` is load-bearing: when the prune is correct this grep matches
+    # nothing, exits 1, and `x="$(...)"` then fails the whole script under set -e
+    # without printing a word. That silent exit cost a full CI round.
     leftover="$(ls payload/usr/local/lib/node_modules/@img 2>/dev/null |
-        grep -Ev '^(colour|sharp-linuxmusl-arm64|sharp-libvips-linuxmusl-arm64)$' | tr '\n' ' ')"
+        grep -Ev '^(colour|sharp-linuxmusl-arm64|sharp-libvips-linuxmusl-arm64)$' | tr '\n' ' ' || true)"
     [ -z "$leftover" ] || echo "  note: other @img entries left in place: $leftover"
 fi
 cp "$ISH_SRC"/app/RootfsPatch.bundle/files/lib/*.js payload/lib/
 # Record the overlay version so the app does not re-apply (and downgrade) the
 # same RootfsPatch files on first launch.
-overlay_ver=$(/usr/libexec/PlistBuddy -c 'Print :version' "$ISH_SRC/app/RootfsPatch.bundle/manifest.plist")
+overlay_ver=$(/usr/libexec/PlistBuddy -c 'Print :version' "$ISH_SRC/app/RootfsPatch.bundle/manifest.plist") ||
+    die "cannot read the RootfsPatch manifest version"
 mkdir -p payload/ish && printf '%s\n' "$overlay_ver" > payload/ish/overlay-version
 cp -R "$ROOT/rootfs/overlay/." payload/
 find payload -name '._*' -delete
 # BSD tar otherwise serialises extended attributes as AppleDouble `._*` files
 # when this payload is unpacked by the Linux guest.
 COPYFILE_DISABLE=1 tar czf payload.tgz -C payload .
-"$ISH_BUILD/ish" -f "$WORK/fakefs" /bin/sh -c 'cd / && tar xzf -' < payload.tgz 2>&1 | filter
+# Under `set -o pipefail` a non-zero emulator status here used to end the script
+# with no message whatsoever -- the unpack pipeline is a bare `ish | filter`.
+# Report it and let the host-side check below decide, so a phase-2 failure always
+# leaves either a line number (ERR trap) or this warning in the log.
+if ! "$ISH_BUILD/ish" -f "$WORK/fakefs" /bin/sh -c 'cd / && tar xzf -' < payload.tgz 2>&1 | filter; then
+    printf '\033[1;33mWARN\033[0m the emulator exited non-zero while unpacking the payload; verifying the result on the host\n' >&2
+fi
 # Phase 2 takes its stdin from the payload tarball rather than a heredoc, so it
 # cannot carry a token. The fakefs data directory mirrors the guest, so the
 # unpacked result is checked directly on the host instead.
