@@ -15,7 +15,9 @@ const char *uname_version = "SUPER AWESOME";
 const char *uname_hostname_override = NULL;
 
 void do_uname(struct uname *uts) {
-    struct utsname real_uname;
+    // Zero-initialised: if uname() ever fails, nodename must not be read as
+    // uninitialised memory (that would give strcpy an unbounded source).
+    struct utsname real_uname = {0};
     uname(&real_uname);
     const char *hostname = real_uname.nodename;
     if (uname_hostname_override)
@@ -23,7 +25,13 @@ void do_uname(struct uname *uts) {
 
     memset(uts, 0, sizeof(struct uname));
     strcpy(uts->system, "Linux");
-    strcpy(uts->hostname, hostname);
+    // hostname comes from the HOST machine (or the app's override) and has no
+    // length guarantee: a host name longer than UNAME_LENGTH used to overflow
+    // uts->hostname. With _FORTIFY_SOURCE on (default in recent Apple SDKs)
+    // that is a hard trap -- `strcpy` -> `stpcpy` -> __chk_fail_overflow,
+    // SIGTRAP, and the emulator dies before the guest even boots.
+    // (Reproduced on GitHub's macos-15 runners.)
+    snprintf(uts->hostname, sizeof(uts->hostname), "%s", hostname);
     strcpy(uts->release, "4.20.69-ish");
     snprintf(uts->version, sizeof(uts->version), "%s %s %s", uname_version, __DATE__, __TIME__);
 #if defined(GUEST_ARM64)
