@@ -5,8 +5,8 @@
 # the repository removed @deepseek-ai/dsh-tui on 2026-08-04 (see
 # .agents/notes/implemented/simplification/2026-08-04-remove-tui-package.md), so
 # `dsh` is now only a launcher and the terminal surface is an out-of-tree
-# profile bundle. This image bakes in dsh-TUI (`@ccchimneyyy/dsh-tui`, "Claude
-# Code-style fullscreen terminal UI") as the `tui` profile.
+# profile bundle. This image bakes in `@brianynwu/dsh-tui` ("Claude
+# Code-style interactive terminal UI") as the `tui` profile.
 #
 # The difference from `--profile headless` matters: headless is the automation
 # front door and prints only the final answer -- its runner drops text-delta and

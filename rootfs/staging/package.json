@@ -4,6 +4,6 @@
   "description": "Pins the packages build-rootfs.sh installs into the guest (linux/arm64/musl): the @deepseek-ai/dsh tree, plus the out-of-tree terminal app the `tui` profile runs.",
   "dependencies": {
     "@deepseek-ai/dsh": "0.1.0-rc.7",
-    "@ccchimneyyy/dsh-tui": "0.8.5"
+    "@brianynwu/dsh-tui": "0.2.0"
   }
 }

@@ -23,8 +23,12 @@ DSH_VERSION="${DSH_VERSION:-0.1.0-rc.7}"
 # The terminal surface, installed into the `tui` profile at build time. dsh
 # removed its own terminal app (@deepseek-ai/dsh-tui) on 2026-08-04, so the
 # terminal is an out-of-tree bundle; dsh-TUI is the Claude Code-style fullscreen
-# one and its peer range (^0.1.0-rc.7) matches the pinned dsh above.
-DSH_TUI_PACKAGE="${DSH_TUI_PACKAGE:-@ccchimneyyy/dsh-tui}"
+# one: "Claude Code-style interactive terminal UI", five runtime deps, and
+# peers on dsh ^0.1.5-rc.1, so it pairs with the newest dsh rather than the pin.
+# (@ccchimneyyy/dsh-tui would have been the other pick, but it ships
+# `workspace:*` dependencies and no package manager can install it outside its
+# own workspace -- npm fails with EUNSUPPORTEDPROTOCOL.)
+DSH_TUI_PACKAGE="${DSH_TUI_PACKAGE:-@brianynwu/dsh-tui}"
 
 log() { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -166,7 +170,7 @@ cat > /root/.dsh/profiles/tui/package.json <<'TUI_PROFILE_EOF'
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
-        "@ccchimneyyy/dsh-tui"
+        "@brianynwu/dsh-tui"
       ],
       "patchReload": "startup"
     }
@@ -182,7 +186,7 @@ node --expose-internals /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js 
     --profile tui --dump-config >/dev/null 2>&1 || {
     echo "error: the tui profile does not compose"; tui_ok=0
 }
-test -d /usr/local/lib/node_modules/@ccchimneyyy/dsh-tui || {
+test -d "/usr/local/lib/node_modules/$DSH_TUI_PACKAGE" || {
     echo "error: the tui bundle was not staged into the guest"; tui_ok=0
 }
 echo "tui profile: bundles=\$(node -e 'try{console.log(require("/root/.dsh/profiles/tui/package.json").dsh.profile.bundles.join(","))}catch(e){console.log("?")}')  ok=\$tui_ok"
