@@ -2,13 +2,18 @@
 # dsh-cli -- an interactive front door to the harness, built only from the
 # official package that already ships in this image.
 #
-# dsh publishes no terminal UI of its own: `--profile tui` exists only once a
-# third-party terminal app is installed, and this guest has no network to
-# install one. What it does publish is `--profile headless`, which answers one
-# task, prints the answer and exits -- and it takes `--resume <session-id>`.
-# Looping that with --resume turns the one-shot form into a multi-turn
-# conversation, with the same model, tools and safety defaults as the browser
-# surface, and nothing extra to keep in step with the upstream release.
+# dsh publishes no terminal UI. What it does publish is `--profile headless`:
+# answer one task, print the answer, exit. Every released version creates a
+# *fresh* session per run -- `sessionId: brand-string("session-" + randomUUID())`
+# is hard-wired in @deepseek-ai/dsh-headless, and there is no `--resume` option
+# in 0.1.0-rc.7, 0.1.2-rc.1, 0.1.3-alpha.2 or 0.1.5-rc.2 (checked by unpacking
+# each from npm; only the unreleased tree has it).
+#
+# So continuity is carried here instead: each turn hands the model the
+# conversation so far along with the new line. That is a transcript, not a live
+# session -- tool activity from earlier turns is not replayed, and every turn
+# re-sends the history. `/context off` gives the plain official one-shot form;
+# `/new` starts over.
 #
 # The terminal session this runs in is started by the app with nothing but TERM
 # in its environment (see TerminalViewController.startSession), so this script
@@ -20,52 +25,37 @@ DSH_HOME=${DSH_HOME:-/root/.dsh}
 WORKSPACE=${DSH_WORKSPACE:-/root/workspace}
 DSH_PKG=/usr/local/lib/node_modules/@deepseek-ai/dsh
 DSH_BIN=$DSH_PKG/lib/bin.js
+TRANSCRIPT=$DSH_HOME/.cli-transcript
+MAX_TRANSCRIPT=12000
 export PATH HOME DSH_HOME
 
-# iOS refuses the guest's own outbound connects, so the app runs a loopback
-# forwarder on the host and this points dsh at it. dsh accepts the base URL
-# only from the launching environment -- never from a .env file -- so it has to
-# be exported here. Override it to talk to a real endpoint instead.
-#
-# The app also leaves the host bridge URL and token in .host-bridge.env, which
-# is what makes the iOS capability tools (device, calendar, photos, ...) work
-# from this CLI the same way they do in the browser surface.
+# The app leaves the host bridge URL and token here (a terminal session's
+# environment carries nothing but TERM), which is what makes the iOS capability
+# tools work from this CLI; it carries the forwarder URL with them.
 if [ -r "$DSH_HOME/.host-bridge.env" ]; then
 	set -a
 	. "$DSH_HOME/.host-bridge.env"
 	set +a
 fi
+
+# iOS refuses the guest's own outbound connects, so the app runs a loopback
+# forwarder on the host. dsh accepts the base URL only from the launching
+# environment, never from a .env file, so it has to be exported here.
 : "${DEEPSEEK_BASE_URL:=http://127.0.0.1:31337}"
 export DEEPSEEK_BASE_URL
 
-# Unconfined, and no approval prompts -- which is not a shortcut, it is the only
-# setting that works here.
-#
-# dsh-base defaults to sandbox `workspace-write` + approval `ask`
-# (packages/*/dsh-base/cordis.patch.yml). Neither half can function in this
-# guest:
-#   * The confining executors are `dsh-bash-sandbox` / `dsh-fs-sandbox`, and
-#     dsh-sandbox-local runs Linux commands under bwrap or the Landlock
-#     launcher. The guest kernel has neither, and an unusable runner fails
-#     closed with SANDBOX_UNAVAILABLE -- never a silent unconfined run -- so
-#     every bash call and every write would be refused.
-#   * Approval is answered by the composed answerers, and only a UI channel (or
-#     the ACP bridge) provides one. Headless has neither, so `ask` fails closed
-#     to `unavailable`: any sensitive action is rejected before it runs.
-#
-# dsh-base reads this one variable for both knobs: the sandbox policy takes it
-# as its mode, and the approval policy resolves to `never` exactly when it says
-# `danger-full-access`. The browser profile reaches the same place through a
-# patch layer (rootfs/overlay/usr/local/share/dsh/cordis.patch.yml), which is
-# installed into profiles/web only -- and there a human can answer prompts, so
-# it keeps `ask`. Anything shell-shaped or file-writing is otherwise unusable
-# from here.
+# dsh-base defaults to sandbox `workspace-write` plus approval `ask`, and
+# neither half can work in this guest: the confining executors need bwrap or
+# Landlock (the guest kernel has neither, and an unusable runner fails closed
+# with SANDBOX_UNAVAILABLE rather than running unconfined), and approval is
+# answered only by a UI channel or the ACP bridge, so `ask` fails closed to
+# `unavailable` with no one to ask. `danger-full-access` resolves the sandbox
+# mode and, in the same expression, the approval policy to `never`.
 : "${DSH_PERMISSION_MODE:=danger-full-access}"
 export DSH_PERMISSION_MODE
 
-# Never exit over setup trouble: the terminal that runs this starts a fresh
-# session the moment it ends, so an exit here would respawn in a loop. Falling
-# through to the prompt leaves the failure visible and recoverable instead.
+# Never exit over setup trouble: the terminal starts a fresh session the moment
+# this one ends, so an exit here would respawn in a loop.
 mkdir -p "$WORKSPACE" 2>/dev/null || true
 cd "$WORKSPACE" 2>/dev/null || cd / || true
 
@@ -75,36 +65,34 @@ CYAN=$(printf '\033[1;36m')
 GREEN=$(printf '\033[1;32m')
 RESET=$(printf '\033[0m')
 
-session=
-sessions_root="$DSH_HOME/sessions"
-
-# Cheap enough to run at startup: reading the version out of package.json does
-# not need a second Node boot, which under emulation costs seconds.
+context=on
 version=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DSH_PKG/package.json" 2>/dev/null | head -n 1)
-
-newest_session() {
-	# dsh lays sessions out as <home>/sessions/<workspace-slug>/session-<uuid>.
-	# The slug is derived from the working directory, which is always the same
-	# here, but globbing one level deeper keeps this correct if it ever is not.
-	ls -1dt "$sessions_root"/*/session-* 2>/dev/null | head -n 1
-}
 
 usage() {
 	printf '%s\n' \
-		"  ${BOLD}<文字>${RESET}     交给 dsh 执行，之后的输入都会续接同一会话" \
+		"  ${BOLD}<文字>${RESET}     交给 dsh 执行（会带上本次对话的历史）" \
 		"  ${BOLD}!<命令>${RESET}    执行一条 shell 命令，不进模型" \
 		"  ${BOLD}!sh${RESET}        进入 shell（exit 回这里）" \
-		"  ${BOLD}/new${RESET}       下一条消息开一个新会话" \
-		"  ${BOLD}/session${RESET}   显示当前会话 id" \
+		"  ${BOLD}/new${RESET}       清空历史，重新开始" \
+		"  ${BOLD}/context${RESET}   开/关历史携带（当前：$context）" \
 		"  ${BOLD}/help${RESET}      显示这段说明" \
 		"  ${BOLD}exit${RESET}       退出（Ctrl-D 也行；会自动重开）"
 }
 
+trim() {
+	# Keep the transcript bounded: a conversation that grows without limit
+	# would be re-sent in full on every turn.
+	if [ -s "$TRANSCRIPT" ] && [ "$(wc -c < "$TRANSCRIPT" | tr -d ' ')" -gt "$MAX_TRANSCRIPT" ]; then
+		tail -c "$MAX_TRANSCRIPT" "$TRANSCRIPT" > "$TRANSCRIPT.tmp" 2>/dev/null &&
+			mv "$TRANSCRIPT.tmp" "$TRANSCRIPT"
+	fi
+}
+
 printf '%s\n' \
 	"${GREEN}  dsh CLI${RESET}  ${DIM}官方 @deepseek-ai/dsh ${version}${RESET}" \
-	"${DIM}  形态：dsh --profile headless（一问一答，--resume 续接同一会话）${RESET}" \
-	"${DIM}  工作目录 ${WORKSPACE}${RESET}" \
-	"${DIM}  模型出口 ${DEEPSEEK_BASE_URL}${RESET}" \
+	"${DIM}  形态：dsh --profile headless（官方一发式，每次一条任务）${RESET}" \
+	"${DIM}  上下文：由本脚本携带（已发布版本没有 --resume）${RESET}" \
+	"${DIM}  工作目录 ${WORKSPACE}   模型出口 ${DEEPSEEK_BASE_URL}${RESET}" \
 	""
 usage
 printf '\n'
@@ -115,7 +103,6 @@ while :; do
 	printf '%s' "$RESET"
 	IFS= read -r line || break
 
-	# Trim, so a stray space is not mistaken for a task.
 	line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 	[ -n "$line" ] || continue
 
@@ -127,17 +114,14 @@ while :; do
 		usage
 		continue
 		;;
-	/session)
-		if [ -n "$session" ]; then
-			printf '  %s\n' "$session"
-		else
-			printf '%s  （还没开始会话）%s\n' "$DIM" "$RESET"
-		fi
+	/new)
+		: > "$TRANSCRIPT"
+		printf '%s  （历史已清空）%s\n' "$DIM" "$RESET"
 		continue
 		;;
-	/new)
-		session=
-		printf '%s  （下一条消息会开一个新会话）%s\n' "$DIM" "$RESET"
+	/context)
+		if [ "$context" = on ]; then context=off; else context=on; fi
+		printf '%s  （历史携带：%s）%s\n' "$DIM" "$context" "$RESET"
 		continue
 		;;
 	'!'*)
@@ -153,14 +137,27 @@ while :; do
 		;;
 	esac
 
-	if [ -n "$session" ]; then
-		node --expose-internals "$DSH_BIN" --profile headless --resume "$session" "$line"
+	if [ "$context" = on ] && [ -s "$TRANSCRIPT" ]; then
+		task="这是本次对话到目前为止的记录，请接着最后一条继续回答，不要复述历史。
+
+$(cat "$TRANSCRIPT")
+User: $line"
 	else
-		node --expose-internals "$DSH_BIN" --profile headless "$line"
-		if [ $? -eq 0 ]; then
-			session=$(basename "$(newest_session)")
-			[ -z "$session" ] || printf '%s  （会话 %s，之后的输入都会续接它）%s\n' "$DIM" "$session" "$RESET"
-		fi
+		task="$line"
+	fi
+
+	# stdout is the answer, stderr is the reasoning stream; only stdout is
+	# captured, so reasoning still reaches the terminal live.
+	answer=$(node --expose-internals "$DSH_BIN" --profile headless "$task")
+	status=$?
+	[ -n "$answer" ] && printf '%s\n' "$answer"
+
+	if [ "$status" -eq 0 ] && [ "$context" = on ]; then
+		{
+			printf 'User: %s\n' "$line"
+			[ -n "$answer" ] && printf 'Assistant: %s\n' "$answer"
+		} >> "$TRANSCRIPT"
+		trim
 	fi
 	printf '\n'
 done
