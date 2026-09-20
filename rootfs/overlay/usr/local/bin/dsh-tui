@@ -1,5 +1,5 @@
 #!/bin/sh
-# dsh-cli -- the terminal front door of this app.
+# dsh-tui -- the terminal front door of this app: it runs the `tui` profile.
 #
 # It runs dsh's interactive terminal surface. dsh itself ships no terminal app:
 # the repository removed @deepseek-ai/dsh-tui on 2026-08-04 (see

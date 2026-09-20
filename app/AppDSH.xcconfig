@@ -1,7 +1,7 @@
 // DSH — DeepSeek Harness for iPad/iPhone, CLI build.
 // Builds the iSH-ARM64 emulator (./ish-arm64) with a bundled Alpine + Node +
 // dsh root filesystem (build/root.tar.gz), then gets out of the way: the app
-// is a terminal running the guest's dsh CLI.
+// is a terminal running the guest's `tui` profile (dsh's interactive surface).
 //
 // This target builds the CLI front end. There is no web UI in it: the DSH
 // browser surface (DSHRootViewController and its overlay) is compiled out by
@@ -19,12 +19,19 @@
 
 ISH_SRC = $(SRCROOT)/ish-arm64
 
+// The terminal surface is dsh's `tui` profile -- not "the CLI". In dsh's own
+// vocabulary `dsh` *is* the CLI (the launcher); the interactive terminal is one
+// of its profiles, alongside web / headless / acp / sdk. Only the home-screen
+// name is renamed to match; the product name and bundle identifier stay as they
+// were on purpose, because a new bundle identifier is a *different* app to iOS:
+// it would install alongside the current one with a fresh container, throwing
+// away the guest image, the session store and the injected credential.
 PRODUCT_NAME = DSHCLI
 DSH_BUNDLE_ID_PREFIX = com.xnuapp
 PRODUCT_BUNDLE_IDENTIFIER = $(DSH_BUNDLE_ID_PREFIX).dshcli
 PRODUCT_APP_GROUP_IDENTIFIER = group.$(DSH_BUNDLE_ID_PREFIX).dshcli
 
-DSH_DISPLAY_NAME = DSH CLI
+DSH_DISPLAY_NAME = DSH TUI
 
 MARKETING_VERSION = 1.0.16
 CURRENT_PROJECT_VERSION = 18

@@ -55,7 +55,7 @@ static NSString *const kDSHUserAgentSuffix = @" DSH-iOS/1.0";
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor colorNamed:@"DSHBackground"] ?: UIColor.systemBackgroundColor;
     self.downloadDestinations = [NSMutableDictionary dictionary];
-    self.cliCommand = @[ @"/usr/local/bin/dsh-cli" ];
+    self.cliCommand = @[ @"/usr/local/bin/dsh-tui" ];
 
     [self buildWebView];
     [self buildControlBar];
@@ -196,7 +196,7 @@ static NSString *const kDSHUserAgentSuffix = @" DSH-iOS/1.0";
     __weak typeof(self) weakSelf = self;
     UIAction *reload = [UIAction actionWithTitle:@"Reload" image:[UIImage systemImageNamed:@"arrow.clockwise"] identifier:@"dsh.reload" handler:^(UIAction *a) { [weakSelf reloadWebView]; }];
     UIAction *terminal = [UIAction actionWithTitle:@"Terminal" image:[UIImage systemImageNamed:@"terminal"] identifier:@"dsh.terminal.menu" handler:^(UIAction *a) { [weakSelf presentTerminal]; }];
-    UIAction *cli = [UIAction actionWithTitle:@"dsh CLI" image:[UIImage systemImageNamed:@"chevron.left.forwardslash.chevron.right"] identifier:@"dsh.cli.menu" handler:^(UIAction *a) { [weakSelf presentCLI]; }];
+    UIAction *cli = [UIAction actionWithTitle:@"dsh TUI" image:[UIImage systemImageNamed:@"chevron.left.forwardslash.chevron.right"] identifier:@"dsh.cli.menu" handler:^(UIAction *a) { [weakSelf presentCLI]; }];
     UIAction *capabilities = [UIAction actionWithTitle:@"Capabilities" image:[UIImage systemImageNamed:@"switch.2"] identifier:@"dsh.capabilities" handler:^(UIAction *a) { [weakSelf presentCapabilities]; }];
     UIAction *activity = [UIAction actionWithTitle:@"Activity" image:[UIImage systemImageNamed:@"list.bullet.rectangle"] identifier:@"dsh.activity" handler:^(UIAction *a) { [weakSelf presentActivity]; }];
     UIAction *log = [UIAction actionWithTitle:@"Server Log" image:[UIImage systemImageNamed:@"doc.text.magnifyingglass"] identifier:@"dsh.log" handler:^(UIAction *a) { [weakSelf presentLog]; }];
@@ -367,7 +367,7 @@ static NSString *const kDSHUserAgentSuffix = @" DSH-iOS/1.0";
     } cache:^(TerminalViewController *vc) { self.terminalVC = vc; }];
 }
 
-/// Opens the harness CLI: a terminal session running the guest's `dsh-cli`,
+/// Opens the terminal surface: a session running the guest's `dsh-tui`,
 /// which loops dsh's official one-shot form (`--profile headless --resume`)
 /// into a continuous conversation. Same agent, tools and credentials as the
 /// browser surface, without the web server, its plugin bundles or the health

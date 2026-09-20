@@ -97,8 +97,8 @@
 /// duration of this one session: -[TerminalViewController processExited:] starts
 /// a fresh session as soon as one ends, so a restored preference would drop the
 /// user into a plain login shell the moment they type `exit`. Leaving it at
-/// `dsh-cli` is what makes this build CLI-only -- every session, now and after
-/// a relaunch, is the harness. `!<command>` inside `dsh-cli` is the way out to a
+/// `dsh-tui` is what makes this build terminal-only -- every session, now and after
+/// a relaunch, is the harness. `!` inside the TUI is the way out to a
 /// shell.
 - (void)handOffToTerminal {
     if (self.handedOff)
@@ -109,7 +109,7 @@
     // guest ships with apk already, so skip that startup message.
     [NSUserDefaults.standardUserDefaults setInteger:1 forKey:@"Skip Startup Message"];
 
-    UserPreferences.shared.launchCommand = @[ @"/usr/local/bin/dsh-cli" ];
+    UserPreferences.shared.launchCommand = @[ @"/usr/local/bin/dsh-tui" ];
 
     UIStoryboard *storyboard = [UIStoryboard storyboardWithName:@"Terminal" bundle:nil];
     TerminalViewController *vc = [storyboard instantiateInitialViewController];

@@ -163,7 +163,7 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
     }
     [DSHStartupMetrics.shared mark:@"bridge_ready"];
 #if DSH_CLI_ONLY
-    // The CLI build has nothing to supervise: `dsh-cli` runs dsh's one-shot
+    // The TUI build has nothing to supervise: `dsh-tui` runs dsh's interactive
     // headless form in the terminal, with no listening port, no WKWebView and
     // none of the client-plugin bundling that dominates startup. Starting
     // dsh-serve here would only spend the guest's CPU on a server no part of
@@ -179,9 +179,9 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
 /// Terminal sessions inherit nothing but TERM (see
 /// -[TerminalViewController startSession]), so environment the app wants the
 /// guest's shells to have has to be written into the guest instead of exported.
-/// `dsh-cli` and /etc/profile.d/dsh-forwarder.sh read this file.
+/// `dsh-tui` and /etc/profile.d/dsh-forwarder.sh read this file.
 ///
-/// Synchronous on purpose: the CLI build hands the screen to `dsh-cli` the
+/// Synchronous on purpose: the TUI build hands the screen to `dsh-tui` the
 /// moment the boot phase turns ready, and the bridge URL has to be on disk
 /// before that terminal starts.
 - (void)writeGuestShellEnvironment:(NSDictionary<NSString *, NSString *> *)environment {
