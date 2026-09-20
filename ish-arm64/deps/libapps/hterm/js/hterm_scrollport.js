@@ -1662,6 +1662,25 @@ hterm.ScrollPort.prototype.onScroll_ = function(e) {
 hterm.ScrollPort.prototype.onScrollWheel = function(e) {};
 
 /**
+ * Clients can override this to hear a drag that had nowhere to scroll.
+ *
+ * On a phone a drag is the only scrolling gesture there is, and hterm's answer
+ * to one is to move its own scrollport. A full-screen application holding the
+ * alternate screen leaves no scrollback behind, so that drag moves nothing and
+ * the user simply cannot read back through the output -- the terminal looks
+ * frozen after a line or two. Narrow terminals (col 20-ish) are where this bites:
+ * the whole transcript is taller than the screen by definition.
+ *
+ * Fired only when the scrollport has no scrollable content at all, so ordinary
+ * shell scrollback keeps its native behaviour, and only for the pixels the drag
+ * moved: clients decide how far a page is.
+ *
+ * @param {number} delta Pixels of finger travel; negative means the finger moved
+ *     up (scroll toward newer output), positive means down (toward older).
+ */
+hterm.ScrollPort.prototype.onTouchScroll = function(delta) {};
+
+/**
  * Handler for scroll-wheel events.
  *
  * The onScrollWheel event fires when the user moves their scrollwheel over this
@@ -1831,6 +1850,13 @@ hterm.ScrollPort.prototype.onTouch_ = function(e) {
       if (top != this.screen_.scrollTop) {
         // Moving scrollTop causes a scroll event, which triggers the redraw.
         this.screen_.scrollTop = top;
+      } else if (this.getScrollMax_() === 0 &&
+                 this.onTouchScroll !== hterm.ScrollPort.prototype.onTouchScroll) {
+        // Nothing here can move: this screen has no scrollback, which is what a
+        // full-screen geometry leaves behind. Hand the drag to the client rather
+        // than swallowing it, so an application that keeps its own transcript
+        // can still be read on a device whose only scrolling gesture is a drag.
+        this.onTouchScroll(delta);
       }
       break;
     }

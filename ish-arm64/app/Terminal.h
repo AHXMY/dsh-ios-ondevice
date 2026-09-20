@@ -25,7 +25,6 @@ struct tty;
 
 - (int)sendOutput:(const void *)buf length:(int)len;
 - (void)sendInput:(NSData *)input;
-
 - (NSString *)arrow:(char)direction;
 
 // Make this terminal no longer be the singleton terminal with its type and number. Will happen eventually if all references go away, but sometimes you want it to happen now.
@@ -35,6 +34,14 @@ struct tty;
 @property (nonatomic) BOOL enableVoiceOverAnnounce;
 // Use KVO on this
 @property (readonly) BOOL loaded;
+
+/// Posted the first time this terminal's output enters the alternate screen.
+///
+/// That is the moment a full-screen application (this app's harness TUI) takes
+/// the terminal over and is about to paint its own frame, which is what the
+/// launch screen waits for -- otherwise the user watches the shell's loading
+/// text as a startup stage of its own, with nothing to do but look at it.
+extern NSNotificationName const DSHTerminalDidEnterAlternateScreenNotification;
 
 @end
 
