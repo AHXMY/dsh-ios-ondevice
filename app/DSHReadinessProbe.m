@@ -58,6 +58,15 @@
         handler(NO, -self.startedAt.timeIntervalSinceNow);
 }
 
+- (void)extendDeadline {
+    NSAssert(NSThread.isMainThread, @"extendDeadline on main");
+    if (!self.running)
+        return;
+    self.startedAt = NSDate.date;
+    self.generation++;
+    [self probeWithGeneration:self.generation];
+}
+
 - (void)finish:(BOOL)ready {
     if (!self.running)
         return;

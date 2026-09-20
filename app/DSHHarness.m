@@ -72,7 +72,7 @@ NSString *DSHHarnessStateName(DSHHarnessState state) {
         _serverExecutable = @"/usr/local/bin/dsh-serve";
         _extraEnvironment = @{};
         _preferredPort = 3080;
-        _startupTimeout = 240;
+        _startupTimeout = 420;
         _maxConsecutiveCrashes = 4;
         _state = DSHHarnessStateIdle;
         _healthCheckCompletions = [NSMutableArray array];
@@ -290,6 +290,12 @@ NSString *DSHHarnessStateName(DSHHarnessState state) {
 - (void)clearPersistentFailures {
     if (self.tracksPersistentFailures)
         [NSUserDefaults.standardUserDefaults removeObjectForKey:kRecentFailuresKey];
+}
+
+- (void)noteForeground {
+    NSAssert(NSThread.isMainThread, @"noteForeground on main");
+    if (self.state == DSHHarnessStateStarting && self.probe != nil)
+        [self.probe extendDeadline];
 }
 
 - (void)verifyAliveWithCompletion:(void (^)(BOOL))completion {

@@ -57,6 +57,10 @@ static void DSHRepairPreferencesPollutedByLegacyTests(void) {
     // Suspension may have broken the guest's sockets. Confirm the server still
     // answers; DSHHarness restarts it otherwise and the UI reloads.
     [DSHHarness.shared verifyAliveWithCompletion:nil];
+    // A boot that was interrupted by suspension has not had its time yet: the
+    // guest is frozen while we are away, so the startup deadline has to start
+    // counting again instead of firing the moment we come back.
+    [DSHHarness.shared noteForeground];
 }
 
 @end

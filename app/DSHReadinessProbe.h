@@ -28,6 +28,12 @@ typedef void (^DSHReadinessHandler)(BOOL ready, NSTimeInterval elapsed);
 - (void)startWithHandler:(DSHReadinessHandler)handler;
 - (void)cancel;
 
+/// Restarts the `timeout` clock without touching the handler. iOS freezes the
+/// whole guest while the app is suspended, so wall-clock time spent in the
+/// background is not time the server had to start in; a probe that kept
+/// counting it declared a healthy boot dead the instant the app came back.
+- (void)extendDeadline;
+
 @property (nonatomic, readonly, getter=isRunning) BOOL running;
 
 /// One-shot check: YES if the URL currently answers 2xx/3xx within `timeout`.

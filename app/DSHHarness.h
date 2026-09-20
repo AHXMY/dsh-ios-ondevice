@@ -83,6 +83,11 @@ extern NSNotificationName const DSHHarnessStateDidChangeNotification;
 /// still up (should not happen) it is restarted. Safe to call on foreground.
 - (void)verifyAliveWithCompletion:(nullable void (^)(BOOL alive))completion;
 
+/// Re-arm the startup deadline after a spell in the background. Call when the
+/// app returns to the foreground: the guest is frozen while suspended, so a
+/// boot that was interrupted there still deserves its full timeout.
+- (void)noteForeground;
+
 @end
 
 NS_ASSUME_NONNULL_END

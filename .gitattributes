@@ -1,0 +1,6 @@
+# Shell scripts and dotenv files run inside the Alpine guest, where a stray
+# carriage return becomes part of the last token on the line and silently
+# breaks a comparison or a variable value. Pin them to LF regardless of the
+# checking-out machine's core.autocrlf.
+*.sh text eol=lf
+.env text eol=lf
