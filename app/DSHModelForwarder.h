@@ -33,6 +33,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) NSString *baseURLString;
 
 - (BOOL)start;
+/// Stop and start again on the same port; call when the app returns to the foreground.
+- (void)restart;
 - (void)stop;
 
 /// Environment for dsh-serve (empty while stopped).

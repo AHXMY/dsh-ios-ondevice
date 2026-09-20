@@ -5,6 +5,7 @@
 
 #import "DSHAppDelegate.h"
 #import "DSHBootCoordinator.h"
+#import "DSHModelForwarder.h"
 #import "DSHHarness.h"
 #if !DSH_CLI_ONLY
 #import "DSHRootViewController.h"
@@ -63,6 +64,9 @@ static void DSHRepairPreferencesPollutedByLegacyTests(void) {
     // guest is frozen while we are away, so the startup deadline has to start
     // counting again instead of firing the moment we come back.
     [DSHHarness.shared noteForeground];
+    // Suspension closes this app's sockets; without re-arming, the guest's model
+    // requests are refused from then on and the terminal retries forever.
+    [DSHModelForwarder.shared restart];
 }
 
 @end

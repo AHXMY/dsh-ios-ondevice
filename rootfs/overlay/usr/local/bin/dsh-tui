@@ -192,6 +192,14 @@ while :; do
     status=$?
     printf '\n\033[1;33mharness exited with %s\033[0m (round %s)\n' "$status" "$round"
     [ -s "$DSH_HOME/tui.err" ] && tail -n 5 "$DSH_HOME/tui.err"
+    # Keep a durable record: the on-screen notice is replaced by the next round
+    # within two seconds, so "it flashed and was gone" is all anyone can report.
+    # This file is readable over USB afterwards, and it is the only evidence of a
+    # clean exit that leaves no crash report anywhere.
+    {
+        printf '\n===== %s  exit=%s  round=%s =====\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$status" "$round"
+        [ -s "$DSH_HOME/tui.err" ] && tail -n 12 "$DSH_HOME/tui.err"
+    } >>"$DSH_HOME/tui-exits.log" 2>/dev/null || true
     printf 'restarting in 2s; Control-C stops it\n'
     newest=$(ls -1dt "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | head -n 1 || true)
     [ -n "$newest" ] && resume_arg="--resume=$(basename "$newest")"

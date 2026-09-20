@@ -342,6 +342,35 @@ static void DSHReleaseForwardSlot(void) {
     }
 }
 
+/// Re-create the listening socket, keeping the same port.
+///
+/// iOS hands a suspended app back with its sockets torn down -- iSH's own
+/// sockrestart comments call this out as a work of the platform, and it is why
+/// the terminal works right after a launch and then degrades to "retrying model
+/// request": the app-side listener was closed while the app was in the
+/// background, nothing rebinds it, every connect from the guest is refused, and
+/// dsh sees a transport failure. Re-arming on foreground is the smallest fix that
+/// matches the failure; the port stays 31337 because the guest's base URL is
+/// already written.
+- (void)restart {
+    @synchronized (self) {
+        uint16_t previous = self.port;
+        [self stop];
+        if ([self start]) {
+            if (previous != 0 && self.port != previous) {
+                [DSHHarness.shared.log append:[NSString stringWithFormat:
+                    @"[dsh-ios] model forwarder re-armed on a different port (%u, was %u); the guest is still pointed at %u",
+                    self.port, previous, previous]];
+            } else {
+                [DSHHarness.shared.log append:[NSString stringWithFormat:
+                    @"[dsh-ios] model forwarder re-armed on 127.0.0.1:%u", self.port]];
+            }
+        } else {
+            [DSHHarness.shared.log append:@"[dsh-ios] model forwarder could NOT re-arm after the app was suspended"];
+        }
+    }
+}
+
 - (NSString *)baseURLString {
     return self.running ? [NSString stringWithFormat:@"http://127.0.0.1:%u", self.port] : nil;
 }
