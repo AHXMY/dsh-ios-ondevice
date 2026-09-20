@@ -183,6 +183,47 @@ fi
 # crash or memory report anywhere (the app never dies). Each round restarts the
 # harness in place instead, and re-resolves the resume target so the conversation
 # comes back with it. `@` still receives whatever arguments the caller passed.
+# Model-path watchdog.
+#
+# The harness reaches the model through the app's loopback forwarder. When that
+# hop is down every request fails with TRANSPORT and the terminal just says
+# "retrying model request 5/5" -- with no crash, no memory report and nothing in
+# the session log beyond the failure itself. So sample the hop in the background
+# and record only the transitions, with the errno: that is the one piece of
+# evidence neither the app nor the harness can produce after the fact.
+# `node` is the right probe here because it is guaranteed present (it is the
+# harness runtime) and it reports the exact error code.
+probe_once() {
+    node -e '
+      const net = require("net");
+      const s = net.connect(31337, "127.0.0.1");
+      s.setTimeout(3000);
+      s.on("connect", () => { console.log("up"); s.destroy(); });
+      s.on("timeout", () => { console.log("down ETIMEDOUT"); s.destroy(); });
+      s.on("error", (e) => { console.log("down " + (e.code || e.message)); });
+    ' 2>/dev/null
+}
+# One probe at a time: a heartbeat file older than 60s means the previous one died.
+_hb="$DSH_HOME/.model-path-probe.hb"
+_now=$(date +%s)
+_prev=$(cat "$_hb" 2>/dev/null || echo 0)
+if [ $((_now - _prev)) -ge 60 ]; then
+    (
+        last=""
+        while :; do
+            date +%s >"$_hb" 2>/dev/null || true
+            now=$(probe_once)
+            [ -z "$now" ] && now="down unknown"
+            if [ "$now" != "$last" ]; then
+                printf '%s  forwarder %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$now" >>"$DSH_HOME/model-path.log" 2>/dev/null || true
+                last="$now"
+            fi
+            sleep 20
+        done
+    ) &
+fi
+printf '  模型通路探针已启动（日志 %s/model-path.log）\n' "$DSH_HOME"
+
 round=0
 while :; do
     round=$((round + 1))
