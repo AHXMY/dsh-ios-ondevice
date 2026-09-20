@@ -1837,6 +1837,20 @@ hterm.ScrollPort.prototype.onTouch_ = function(e) {
       // Invert to match the touchscreen scrolling direction of browser windows.
       delta *= -1;
 
+      // Ask the client before scrolling anything.
+      //
+      // A full-screen application owns its own viewport and keeps its transcript
+      // in the alternate screen. hterm's scrollback, however, belongs to the
+      // *primary* screen and survives that switch, so scrolling it here moves a
+      // buffer the user cannot see while the visible transcript stays put -- the
+      // reported "it moves a little and then stops" is exactly that. The client
+      // answers true when it has handled the gesture, and then this scrollport
+      // must not also move.
+      if (this.onTouchScroll !== hterm.ScrollPort.prototype.onTouchScroll &&
+          this.onTouchScroll(delta) === true) {
+        break;
+      }
+
       let top = this.screen_.scrollTop - delta;
       if (top < 0) {
         top = 0;
@@ -1850,14 +1864,6 @@ hterm.ScrollPort.prototype.onTouch_ = function(e) {
       if (top != this.screen_.scrollTop) {
         // Moving scrollTop causes a scroll event, which triggers the redraw.
         this.screen_.scrollTop = top;
-      } else if (this.onTouchScroll !== hterm.ScrollPort.prototype.onTouchScroll) {
-        // The drag ran out of room in this scrollport. That is the normal state
-        // of a full-screen application -- it paints one screenful and keeps its
-        // own transcript, so hterm has nothing to scroll even though its DOM may
-        // still hold a few rows of slack. Hand the movement to the client, which
-        // decides whether the application wants it (mouse reporting on) or not
-        // (a plain shell, where dragging past the end should stay silent).
-        this.onTouchScroll(delta);
       }
       break;
     }

@@ -391,10 +391,56 @@ if [ $((_now - _prev)) -ge 60 ]; then
         done
     ) &
 fi
-# The probe still runs and still logs; it does not announce itself on screen
-# any more, because the launch screen covers this moment and a line about an
-# internal log is noise the user has to read past.
-:
+printf '  模型通路探针在跑（日志 %s/model-path.log）\n' "$DSH_HOME" >/dev/null 2>&1 || true
+
+# The instrument that names the cause of a clean exit.
+#
+# Written here rather than shipped in the image so it can be changed without a
+# rebuild: the harness has been exiting with status 0 and an empty stderr on a
+# few-minute cadence, `--trace-exit` printed nothing (so nothing calls exit), and
+# that leaves exactly one candidate -- the event loop draining because stdin
+# ended. This records the order of events so the next occurrence says which
+# happened: a signal, stdin ending, or the loop emptying on its own.
+cat >"$DSH_HOME/node-events.cjs" <<'DSH_NODE_EVENTS'
+// Records what ends the harness's process, in order, to node-events.log.
+const fs = require('fs');
+const path = require('path');
+const log = path.join(process.env.DSH_HOME || '/root/.dsh', 'node-events.log');
+const started = Date.now();
+const say = (message) => {
+    try {
+        fs.appendFileSync(log, new Date().toISOString() + '  +' +
+            ((Date.now() - started) / 1000).toFixed(1) + 's  ' + message + '\n');
+    } catch {}
+};
+say('start pid=' + process.pid + ' argv=' + process.argv.slice(1, 4).join(' '));
+process.on('exit', (code) => say('exit code=' + code));
+process.on('beforeExit', (code) => say('beforeExit code=' + code + ' (event loop drained)'));
+['SIGHUP', 'SIGINT', 'SIGTERM', 'SIGQUIT', 'SIGWINCH', 'SIGTSTP', 'SIGCONT'].forEach((signal) => {
+    process.on(signal, () => say('signal ' + signal));
+});
+for (const stream of ['stdin', 'stdout', 'stderr']) {
+    const s = process[stream];
+    if (!s) continue;
+    s.on('end', () => say(stream + ' end'));
+    s.on('close', () => say(stream + ' close'));
+    s.on('error', (e) => say(stream + ' error ' + (e && e.code)));
+}
+if (process.stdin && process.stdin.isTTY) {
+    say('stdin is a tty');
+    process.stdout.on('resize', () =>
+        say('resize ' + process.stdout.columns + 'x' + process.stdout.rows));
+}
+DSH_NODE_EVENTS
+
+# Terminal size is recorded by the process that has the terminal.
+#
+# A poll here reported "unknown": a background subshell of a non-interactive shell
+# has no controlling terminal to ask, so `stty size` cannot answer. The preload
+# above runs inside the harness itself, where stdout IS the terminal, and it logs
+# every resize event as it happens -- which is the shape the question needs
+# anyway (did the size change right before an exit), not a 2-second sample.
+
 
 round=0
 while :; do
@@ -421,7 +467,15 @@ while :; do
         printf '  上一轮自己退出了（exit=%s，见 %s/tui-exits.log）\n' "$status" "$DSH_HOME"
     fi
     printf '  \033[2m正在加载 harness，约 20~40 秒；这段时间键盘没有反应是正常的…\033[0m\n'
-    node --expose-internals "$DSH_BIN" --profile tui $resume_arg "$@" 2>"$DSH_HOME/tui.err"
+    # `--trace-exit` makes a deliberate exit print the stack that called it.
+    #
+    # Nothing was printed, which is itself the finding: the harness is not calling
+    # process.exit(), it is ending because its event loop empties -- i.e. its
+    # standard input reaches EOF. That points at the app-side session being
+    # rebuilt, not at anything inside the harness. The preload below records the
+    # order of events (beforeExit, stdin end/close, signals) so the next exit has
+    # a cause attached instead of a theory.
+    node --trace-exit --require "$DSH_HOME/node-events.cjs" --expose-internals "$DSH_BIN" --profile tui $resume_arg "$@" 2>"$DSH_HOME/tui.err"
     status=$?
     printf '\n\033[1;33m终端已重启（第 %s 轮）\033[0m\n' "$((round + 1))"
     [ -s "$DSH_HOME/tui.err" ] && tail -n 5 "$DSH_HOME/tui.err"
