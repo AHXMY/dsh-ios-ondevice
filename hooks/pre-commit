@@ -1,0 +1,14 @@
+#!/bin/sh
+# Local safety net for scripts/privacy-guard.sh.
+#
+# Activate once per clone:
+#   git config core.hooksPath hooks
+#
+# The gate itself lives in scripts/privacy-guard.sh so CI runs the identical
+# check; this hook only makes a local slip fail before the commit exists, when
+# it is still trivially reversible, rather than at push time.
+
+sh "$(git rev-parse --show-toplevel)/scripts/privacy-guard.sh" || {
+    echo "pre-commit: refused -- fix the paths above before committing." >&2
+    exit 1
+}

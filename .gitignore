@@ -25,3 +25,13 @@ preset-security/
 **/persona*.md
 *.credentials.yaml
 .env
+
+# Same shapes as scripts/privacy-guard.sh, so a local slip cannot even be staged.
+# ---------------------------------------------------------------------------
+**/security-preset/
+**/scope-guard*.mjs
+**/scope-tool*.mjs
+**/new-project*.mjs
+**/backup-file*.mjs
+**/dsh-preset*.tar.gz
+**/agent.cordis.yml

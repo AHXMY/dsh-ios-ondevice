@@ -36,7 +36,9 @@ jobs:
 
     steps:
       - name: 拉代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4
+      - name: privacy guard (the security preset must never be tracked)
+        run: sh scripts/privacy-guard.sh
 
       - name: 装构建工具
         run: |
