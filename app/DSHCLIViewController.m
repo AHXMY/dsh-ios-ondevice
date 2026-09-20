@@ -13,6 +13,7 @@
 #import "DSHBootCoordinator.h"
 #import "DSHHarness.h"
 #import "TerminalViewController.h"
+#import "Terminal.h"
 #import "UserPreferences.h"
 
 static const NSUInteger kStepCount = 4;
@@ -336,12 +337,51 @@ static NSUInteger stepForPhase(DSHBootPhase phase) {
 
     [vc startNewSession];
 
-    // The terminal owns the screen now; drop the launch furniture (and its
-    // animations) instead of leaving them rendering underneath the web view.
-    [self.launchStack removeFromSuperview];
-    [self.background removeAllAnimations];
+    // Keep the launch screen up until the harness's own screen appears.
+    //
+    // Dropping it here means the user watches the shell's loading text -- a
+    // banner plus "loading plugins, 30-60 seconds" -- as a stage of its own, with
+    // nothing they can do but look at it. The TUI announces itself by entering
+    // the alternate screen, which is the moment its first frame is about to be
+    // painted, so the splash stays until then and the whole startup reads as one
+    // screen handing over to the next.
+    //
+    // The timeout is the escape hatch: a boot that never gets there (a failed
+    // guest, a shell that stays a shell) must not leave the splash covering the
+    // reason it failed.
     self.terminalVC = vc;
+    [NSNotificationCenter.defaultCenter addObserver:self
+                                          selector:@selector(terminalDidEnterAlternateScreen:)
+                                              name:DSHTerminalDidEnterAlternateScreenNotification
+                                            object:nil];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(180 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakSelf revealTerminal];
+    });
     [DSHHarness.shared.log append:@"[dsh-ios] CLI front end started"];
+}
+
+- (void)terminalDidEnterAlternateScreen:(NSNotification *)notification {
+    [self revealTerminal];
+}
+
+/// Drop the launch screen -- once, whenever the terminal is ready or time is up.
+- (void)revealTerminal {
+    UIStackView *stack = self.launchStack;
+    if (stack == nil)
+        return;
+    self.launchStack = nil;
+    [NSNotificationCenter.defaultCenter removeObserver:self
+                                                  name:DSHTerminalDidEnterAlternateScreenNotification
+                                                object:nil];
+    [UIView animateWithDuration:0.35 animations:^{
+        stack.alpha = 0;
+    } completion:^(BOOL finished) {
+        [stack removeFromSuperview];
+    }];
+    [self.background removeAllAnimations];
+    [DSHHarness.shared.log append:@"[dsh-ios] launch screen dropped; the terminal has the screen"];
 }
 
 @end

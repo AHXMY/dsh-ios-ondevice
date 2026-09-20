@@ -1742,6 +1742,36 @@ hterm.Terminal.prototype.setupScrollPort_ = function() {
       'mousemove', /** @type {!EventListener} */ (onMouse));
   this.scrollPort_.onScrollWheel = onMouse;
 
+  // A drag that has nowhere to scroll, turned into the keys that scroll a
+  // full-screen application.
+  //
+  // hterm answers a touch drag by moving its own scrollport, and an application
+  // holding the alternate screen leaves no scrollback there -- so on a phone such
+  // an application's transcript can only ever be read one screen deep. That is
+  // the reported symptom exactly: the conversation stops moving after a line or
+  // two and cannot be scrolled back at all.
+  //
+  // Wheel events would be the canonical path, and this terminal already forwards
+  // them (`onScrollWheel = onMouse`), but a touch drag never produces one and
+  // synthesising WheelEvents inside a WKWebView is not something to bet a user's
+  // transcript on. A drag of a few rows therefore becomes one page key -- the
+  // sequences a desktop PageUp/PageDown sends, and the keys every full-screen
+  // terminal UI binds.
+  let dragPending = 0;
+  this.scrollPort_.onTouchScroll = (delta) => {
+    dragPending += delta;
+    const rowsPerPage = this.scrollPort_.characterSize.height * 6;
+    while (Math.abs(dragPending) >= rowsPerPage) {
+      if (dragPending < 0) {
+        dragPending += rowsPerPage;
+        this.onVTKeystroke('\x1b[6~');
+      } else {
+        dragPending -= rowsPerPage;
+        this.onVTKeystroke('\x1b[5~');
+      }
+    }
+  };
+
   screenNode.addEventListener(
       'keydown',
       /** @type {!EventListener} */ (this.onKeyboardActivity_.bind(this)));
