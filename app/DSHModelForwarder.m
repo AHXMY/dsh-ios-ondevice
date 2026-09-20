@@ -240,6 +240,8 @@ static void DSHReleaseForwardSlot(void) {
 
 #pragma mark - The listener
 
+NSNotificationName const DSHModelForwarderPortDidChangeNotification = @"DSHModelForwarderPortDidChangeNotification";
+
 @interface DSHModelForwarder ()
 @property (nonatomic) int listenFD;
 @property (nonatomic) uint16_t port;
@@ -331,8 +333,12 @@ static void DSHReleaseForwardSlot(void) {
 
 - (void)stop {
     @synchronized (self) {
-        if (!self.running)
-            return;
+        // Deliberately not an early return on `running`: a listener whose fd is
+        // still open while `running` is already NO would never be closed, and
+        // the port would stay taken by this process. That is exactly how a
+        // re-arm ends up on a port other than the one the guest was told to use
+        // -- the allocator sees 31337 taken (by us), moves to 31338, and the
+        // guest keeps talking to a port nothing is listening on.
         self.running = NO;
         if (self.acceptSource) {
             dispatch_source_cancel(self.acceptSource);
@@ -418,6 +424,10 @@ static void DSHReleaseForwardSlot(void) {
         [DSHHarness.shared.log append:[NSString stringWithFormat:
             @"[dsh-ios] model forwarder watchdog: now on port %u, was %u; the guest is still pointed at %u",
             self.port, previous, previous]];
+        // Tell the app: the guest's environment file has to be rewritten, or
+        // every request keeps going to the port that just went away.
+        [NSNotificationCenter.defaultCenter postNotificationName:DSHModelForwarderPortDidChangeNotification
+                                                         object:self];
     }
 }
 

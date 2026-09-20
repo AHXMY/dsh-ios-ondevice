@@ -19,6 +19,14 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// Posted when the listener comes back on a different port than before.
+///
+/// The guest is told one base URL and keeps using it, so a port change has to
+/// reach it: whoever owns the guest environment file must rewrite it. Without
+/// this, a re-arm on a new port is indistinguishable from a dead listener --
+/// which is exactly how "retrying model request" became permanent on device.
+extern NSNotificationName const DSHModelForwarderPortDidChangeNotification;
+
 @interface DSHModelForwarder : NSObject
 
 + (instancetype)shared;

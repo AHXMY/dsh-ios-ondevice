@@ -32,18 +32,27 @@ mkdir -p "$DSH_WORKSPACE" 2>/dev/null || true
 # The app leaves the host bridge URL and token here (a terminal session's
 # environment carries nothing but TERM), which is what makes the iOS capability
 # tools work from the terminal; it carries the forwarder URL with them.
-if [ -r "$DSH_HOME/.host-bridge.env" ]; then
-	set -a
-	. "$DSH_HOME/.host-bridge.env"
-	set +a
-fi
-
-# iOS refuses the guest's own outbound connects, so the app runs a loopback
-# forwarder on the host. dsh accepts this variable only from the launching
+#
+# Read again before every harness round, not once at startup: the app can re-arm
+# its forwarder on a different port after a suspension, and this file is the only
+# channel by which the guest can learn that. One-shot reading is how a port
+# change turns into a terminal that retries forever against a dead port --
+# the app rewrote the file, and nothing in the guest ever looked again.
+#
+# iOS refuses the guest's own outbound connects, so the app runs that loopback
+# forwarder on the host. dsh accepts the base URL only from the launching
 # environment, never from a .env file, so it has to be exported here. The
-# dsh-tui bundle reads it for the adapter's baseURL.
-: "${DEEPSEEK_BASE_URL:=http://127.0.0.1:31337}"
-export DEEPSEEK_BASE_URL
+# `dsh-tui` bundle reads it for the adapter's baseURL.
+load_host_env() {
+    if [ -r "$DSH_HOME/.host-bridge.env" ]; then
+        set -a
+        . "$DSH_HOME/.host-bridge.env"
+        set +a
+    fi
+    : "${DEEPSEEK_BASE_URL:=http://127.0.0.1:31337}"
+    export DEEPSEEK_BASE_URL
+}
+load_host_env
 
 # dsh-base defaults to sandbox `workspace-write` plus approval `ask`, and
 # neither half can work in this guest: the confining executors need bwrap or
@@ -288,6 +297,10 @@ if [ $((_now - _prev)) -ge 60 ]; then
         printf '%s  sampler start  port=%s  base=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$port" "$DEEPSEEK_BASE_URL" >>"$DSH_HOME/model-path.log" 2>/dev/null || true
         while :; do
             date +%s >"$_hb" 2>/dev/null || true
+            # Follow the app: a re-arm can move the port, and this file is where
+            # that is announced.
+            load_host_env
+            port=$(declare_probe_port)
             now=$(probe_once "$port")
             [ -z "$now" ] && now="no-output"
             printf '%s  port=%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$port" "$now" >>"$DSH_HOME/model-path.log" 2>/dev/null || true
@@ -313,6 +326,7 @@ while :; do
     fi
     # stderr is mirrored into a file: the TUI owns stdout/stdin for rendering, so
     # when it fails the reason lands on stderr, which no part of this app captures.
+    load_host_env
     node --expose-internals "$DSH_BIN" --profile tui $resume_arg "$@" 2>"$DSH_HOME/tui.err"
     status=$?
     printf '\n\033[1;33mharness exited with %s\033[0m (round %s)\n' "$status" "$round"
