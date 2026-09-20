@@ -27,16 +27,8 @@ jobs:
         include:
           - tag: pinned
             dsh: pinned
-            mode: web
-          - tag: pinned-cli
-            dsh: pinned
-            mode: cli
           - tag: latest
             dsh: 0.1.5-rc.2
-            mode: web
-          - tag: latest-cli
-            dsh: 0.1.5-rc.2
-            mode: cli
 
     steps:
       - name: 拉代码
@@ -100,31 +92,11 @@ jobs:
           ls -1 DSH.xcodeproj
 
       - name: 编译 App（关闭签名）
-        env:
-          MODE: ${{ matrix.mode }}
         run: |
           set +e
-          # One project, two installable apps. The CLI build keeps the same
-          # guest and the same dsh; what changes is the front end -- no web
-          # server, no WKWebView, no client-plugin bundling -- so it needs its
-          # own bundle id and home-screen name to sit beside the browser build.
-          #
-          # GCC_PREPROCESSOR_DEFINITIONS is replaced wholesale rather than
-          # extended with $(inherited): nothing else contributes to it (checked
-          # against ish-arm64/app/AppARM64.xcconfig), and a literal $(inherited)
-          # in a shell variable would be command substitution.
-          if [ "$MODE" = "cli" ]; then
-            APP_NAME=DSHCLI
-            BUNDLE_ID=com.xnuapp.dshcli
-            DISPLAY_NAME="DSH CLI"
-            DEFINES="DSH_APP=1 DSH_CLI_ONLY=1"
-          else
-            APP_NAME=DSH
-            BUNDLE_ID=com.xnuapp.dsh
-            DISPLAY_NAME="DSHIOS"
-            DEFINES="DSH_APP=1"
-          fi
-          echo "mode=$MODE app=$APP_NAME bundle=$BUNDLE_ID defines=$DEFINES"
+          # The project builds the CLI app: a terminal running the guest's dsh
+          # CLI, with no web server and no DSH web UI in the binary. See
+          # app/AppDSH.xcconfig for how to build the browser surface instead.
           xcodebuild \
             -project DSH.xcodeproj \
             -scheme DSH \
@@ -137,10 +109,6 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
             DSH_DEVELOPMENT_TEAM="" \
-            PRODUCT_NAME="$APP_NAME" \
-            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
-            DSH_DISPLAY_NAME="$DISPLAY_NAME" \
-            GCC_PREPROCESSOR_DEFINITIONS="$DEFINES" \
             > build/xcodebuild.log 2>&1
           CODE=$?
           set -e
@@ -157,14 +125,12 @@ jobs:
       - name: 打成一个未签名的 ipa
         env:
           TAG: ${{ matrix.tag }}
-          MODE: ${{ matrix.mode }}
         run: |
           set -euo pipefail
           # 变量后面不要紧跟非 ASCII 字符，bash 会把多字节字符当成变量名的一部分
           # Name the app explicitly: a scheme build can also emit the UI-test
           # runner, and picking "the first .app" would package the wrong one.
-          if [ "$MODE" = "cli" ]; then APP_NAME=DSHCLI; else APP_NAME=DSH; fi
-          APP_PATH="build/dd/Build/Products/Release-iphoneos/${APP_NAME}.app"
+          APP_PATH="build/dd/Build/Products/Release-iphoneos/DSHCLI.app"
           echo "app: $APP_PATH"
           if [ ! -d "$APP_PATH" ]; then
             echo "没找到 .app，把目录摊开："

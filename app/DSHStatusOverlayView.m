@@ -2,6 +2,10 @@
 //  DSHStatusOverlayView.m
 //  DSH
 //
+//  Browser build only: see the header.
+//
+
+#if !DSH_CLI_ONLY
 
 #import "DSHStatusOverlayView.h"
 
@@ -244,3 +248,5 @@
 }
 
 @end
+
+#endif

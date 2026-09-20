@@ -156,7 +156,7 @@ xcodebuild -project DSH.xcodeproj -scheme "$SCHEME" -configuration Release \
     -destination 'generic/platform=iOS' \
     -archivePath "$ARCHIVE" archive
 
-plist="$ARCHIVE/Products/Applications/DSH.app/Info.plist"
+plist="$ARCHIVE/Products/Applications/DSHCLI.app/Info.plist"
 # Apple's own validator catches these, but only after a ten-minute upload.
 for key in NSHealthShareUsageDescription NSHealthUpdateUsageDescription \
            NSCalendarsFullAccessUsageDescription NSRemindersFullAccessUsageDescription \

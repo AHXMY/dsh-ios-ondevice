@@ -6,7 +6,9 @@
 #import "DSHAppDelegate.h"
 #import "DSHBootCoordinator.h"
 #import "DSHHarness.h"
+#if !DSH_CLI_ONLY
 #import "DSHRootViewController.h"
+#endif
 
 static NSString *const kCapabilityPreferenceRepair = @"DSHCapabilityPreferenceRepair.2";
 

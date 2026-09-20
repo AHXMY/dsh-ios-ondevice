@@ -2,6 +2,11 @@
 //  DSHRootViewController.m
 //  DSH
 //
+//  Browser build only: see the header. Compiled out of the CLI build so the
+//  DSH web surface -- and the WKWebView that hosts it -- is not in that binary.
+//
+
+#if !DSH_CLI_ONLY
 
 #import "DSHRootViewController.h"
 #import "DSHHarness.h"
@@ -680,3 +685,5 @@ static const NSTimeInterval kActivityIndicatorVisible = 6;
 }
 
 @end
+
+#endif

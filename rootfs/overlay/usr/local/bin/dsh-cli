@@ -38,8 +38,11 @@ fi
 : "${DEEPSEEK_BASE_URL:=http://127.0.0.1:31337}"
 export DEEPSEEK_BASE_URL
 
-mkdir -p "$WORKSPACE" || exit 1
-cd "$WORKSPACE" || exit 1
+# Never exit over setup trouble: the terminal that runs this starts a fresh
+# session the moment it ends, so an exit here would respawn in a loop. Falling
+# through to the prompt leaves the failure visible and recoverable instead.
+mkdir -p "$WORKSPACE" 2>/dev/null || true
+cd "$WORKSPACE" 2>/dev/null || cd / || true
 
 BOLD=$(printf '\033[1m')
 DIM=$(printf '\033[2m')
@@ -65,10 +68,11 @@ usage() {
 	printf '%s\n' \
 		"  ${BOLD}<文字>${RESET}     交给 dsh 执行，之后的输入都会续接同一会话" \
 		"  ${BOLD}!<命令>${RESET}    执行一条 shell 命令，不进模型" \
+		"  ${BOLD}!sh${RESET}        进入 shell（exit 回这里）" \
 		"  ${BOLD}/new${RESET}       下一条消息开一个新会话" \
 		"  ${BOLD}/session${RESET}   显示当前会话 id" \
 		"  ${BOLD}/help${RESET}      显示这段说明" \
-		"  ${BOLD}exit${RESET}       退出（Ctrl-D 也行）"
+		"  ${BOLD}exit${RESET}       退出（Ctrl-D 也行；会自动重开）"
 }
 
 printf '%s\n' \
@@ -112,6 +116,13 @@ while :; do
 		continue
 		;;
 	'!'*)
+		# A bare `!sh` hands the terminal over to a real shell; leaving that
+		# shell ends the session, and the terminal starts a new one here.
+		case "${line#!}" in
+		sh | bash | ash | login)
+			exec "${line#!}"
+			;;
+		esac
 		sh -c "${line#!}"
 		continue
 		;;

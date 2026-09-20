@@ -4,9 +4,10 @@
 //
 
 #import "DSHSceneDelegate.h"
-#import "DSHRootViewController.h"
 #if DSH_CLI_ONLY
 #import "DSHCLIViewController.h"
+#else
+#import "DSHRootViewController.h"
 #endif
 #import "AppDelegate.h"
 #import "AboutViewController.h"
@@ -33,9 +34,11 @@
 }
 
 - (void)sceneDidBecomeActive:(UIScene *)scene {
+#if !DSH_CLI_ONLY
     UIViewController *root = self.window.rootViewController;
     if ([root isKindOfClass:DSHRootViewController.class])
         [(DSHRootViewController *) root sceneDidBecomeActive];
+#endif
 }
 
 @end

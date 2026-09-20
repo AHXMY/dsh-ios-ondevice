@@ -21,7 +21,12 @@ SCHEME    ?= DSH
 TEAM      ?= YPV49M8592
 DEVICE    ?=                       # udid of the connected device (xcrun devicectl list devices)
 SIM       ?= iPad Air 11-inch (M4)
-BUNDLE_ID ?= com.xnuapp.dsh
+BUNDLE_ID ?= com.xnuapp.dshcli
+# Product name of the app target. Must match PRODUCT_NAME in
+# app/AppDSH.xcconfig, which gen-xcode-project.rb also reads for the test
+# bundles' TEST_HOST. The browser build overrides it to DSH on the xcodebuild
+# command line (see the header of that xcconfig).
+APP_NAME  ?= DSHCLI
 XCB        = xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration Release DSH_DEVELOPMENT_TEAM=$(TEAM)
 DERIVED    = $(shell ls -dt ~/Library/Developer/Xcode/DerivedData/DSH-*/Build/Products 2>/dev/null | head -1)
 
@@ -49,7 +54,7 @@ app: project
 	$(XCB) -destination 'generic/platform=iOS' build
 
 install: app
-	xcrun devicectl device install app --device $(DEVICE) "$(DERIVED)/Release-iphoneos/DSH.app"
+	xcrun devicectl device install app --device $(DEVICE) "$(DERIVED)/Release-iphoneos/$(APP_NAME).app"
 
 run: install
 	xcrun devicectl device process launch --device $(DEVICE) --terminate-existing $(BUNDLE_ID)

@@ -112,6 +112,12 @@ app_dir = ROOT + 'app'
 app_source_refs = Dir[(app_dir + '*.{m,swift}').to_s].sort.map { |f| app_group.new_file(File.basename(f)) }
 Dir[(app_dir + '*.h').to_s].sort.each { |f| app_group.new_file(File.basename(f)) }
 xcconfig_ref = app_group.new_file('AppDSH.xcconfig')
+# The app's product name lives in that xcconfig, and the test bundles have to
+# name the same .app in TEST_HOST: a scheme build builds them alongside the app,
+# and DSHTests links against the app binary with -bundle_loader. Reading it here
+# keeps the two in step when the front end changes (DSHCLI for the CLI build).
+app_product_name = File.read(app_dir + 'AppDSH.xcconfig')[/^\s*PRODUCT_NAME\s*=\s*(\S+)/, 1] or abort 'PRODUCT_NAME missing from AppDSH.xcconfig'
+puts "app product name: #{app_product_name}"
 app_group.new_file('Info.plist')
 app_group.new_file('DSH.entitlements')
 app_resource_refs = %w[DSHAssets.xcassets DSHLaunchScreen.storyboard PrivacyInfo.xcprivacy].map { |f| app_group.new_file(f) }
@@ -223,7 +229,7 @@ tests.build_configuration_list.build_configurations.each do |bc|
   bc.build_settings.merge!(common_test_settings, {
     'PRODUCT_BUNDLE_IDENTIFIER' => 'com.xnuapp.dsh.tests',
     'INFOPLIST_FILE' => '$(SRCROOT)/tests/DSHTests/Info.plist',
-    'TEST_HOST' => '$(BUILT_PRODUCTS_DIR)/DSH.app/DSH',
+    'TEST_HOST' => "$(BUILT_PRODUCTS_DIR)/#{app_product_name}.app/#{app_product_name}",
     'BUNDLE_LOADER' => '$(TEST_HOST)',
   })
 end

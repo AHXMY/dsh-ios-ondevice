@@ -90,9 +90,16 @@
         self.statusLabel.text = message;
 }
 
-/// The guest is up: give the screen to the CLI and get out of the way. The
-/// session's command is iSH's "Init Command" preference, read once when the
-/// session starts, so it is restored immediately afterwards.
+/// The guest is up: give the screen to the CLI and get out of the way.
+///
+/// The session's command is iSH's "Init Command" preference, read once when a
+/// session starts, and it is set *permanently* here rather than swapped for the
+/// duration of this one session: -[TerminalViewController processExited:] starts
+/// a fresh session as soon as one ends, so a restored preference would drop the
+/// user into a plain login shell the moment they type `exit`. Leaving it at
+/// `dsh-cli` is what makes this build CLI-only -- every session, now and after
+/// a relaunch, is the harness. `!<command>` inside `dsh-cli` is the way out to a
+/// shell.
 - (void)handOffToTerminal {
     if (self.handedOff)
         return;
@@ -102,13 +109,12 @@
     // guest ships with apk already, so skip that startup message.
     [NSUserDefaults.standardUserDefaults setInteger:1 forKey:@"Skip Startup Message"];
 
-    NSArray<NSString *> *previous = UserPreferences.shared.launchCommand;
     UserPreferences.shared.launchCommand = @[ @"/usr/local/bin/dsh-cli" ];
 
     UIStoryboard *storyboard = [UIStoryboard storyboardWithName:@"Terminal" bundle:nil];
     TerminalViewController *vc = [storyboard instantiateInitialViewController];
-    // The terminal is this scene's whole content now; it must never tear the
-    // scene down when the session ends, or the app would show a blank window.
+    // Nothing here manages the scene; the terminal owns the whole window, so a
+    // session ending must not be able to tear it down.
     vc.sceneSession = nil;
     vc.view.translatesAutoresizingMaskIntoConstraints = NO;
     [self addChildViewController:vc];
@@ -122,8 +128,6 @@
     [vc didMoveToParentViewController:self];
 
     [vc startNewSession];
-
-    UserPreferences.shared.launchCommand = previous;
 
     self.terminalVC = vc;
     [self.spinner stopAnimating];

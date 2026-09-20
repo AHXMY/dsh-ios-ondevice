@@ -4,6 +4,11 @@
 //
 //  Full-screen status card shown while the harness is starting or failed.
 //
+//  Browser build only: it belongs to DSHRootViewController, which the CLI
+//  build compiles out.
+//
+
+#if !DSH_CLI_ONLY
 
 #import <UIKit/UIKit.h>
 
@@ -31,3 +36,5 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 NS_ASSUME_NONNULL_END
+
+#endif
