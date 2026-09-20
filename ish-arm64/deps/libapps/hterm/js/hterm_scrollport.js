@@ -1850,12 +1850,13 @@ hterm.ScrollPort.prototype.onTouch_ = function(e) {
       if (top != this.screen_.scrollTop) {
         // Moving scrollTop causes a scroll event, which triggers the redraw.
         this.screen_.scrollTop = top;
-      } else if (this.getScrollMax_() === 0 &&
-                 this.onTouchScroll !== hterm.ScrollPort.prototype.onTouchScroll) {
-        // Nothing here can move: this screen has no scrollback, which is what a
-        // full-screen geometry leaves behind. Hand the drag to the client rather
-        // than swallowing it, so an application that keeps its own transcript
-        // can still be read on a device whose only scrolling gesture is a drag.
+      } else if (this.onTouchScroll !== hterm.ScrollPort.prototype.onTouchScroll) {
+        // The drag ran out of room in this scrollport. That is the normal state
+        // of a full-screen application -- it paints one screenful and keeps its
+        // own transcript, so hterm has nothing to scroll even though its DOM may
+        // still hold a few rows of slack. Hand the movement to the client, which
+        // decides whether the application wants it (mouse reporting on) or not
+        // (a plain shell, where dragging past the end should stay silent).
         this.onTouchScroll(delta);
       }
       break;
