@@ -43,6 +43,15 @@ struct tty;
 /// text as a startup stage of its own, with nothing to do but look at it.
 extern NSNotificationName const DSHTerminalDidEnterAlternateScreenNotification;
 
+/// Posted when a full-screen application gives the terminal back.
+///
+/// The harness exits cleanly from time to time and the app answers a finished
+/// session with a fresh shell, which then spends half a minute loading. That
+/// window has no interactive program in it, so the app covers it: this is the
+/// signal that the cover is needed, and an enter notification is the signal that
+/// it can come down.
+extern NSNotificationName const DSHTerminalDidLeaveAlternateScreenNotification;
+
 @end
 
 extern struct tty_driver ios_console_driver;
