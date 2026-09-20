@@ -4,6 +4,10 @@
 # 这个 App 做的事：内嵌 iSH-ARM64（用户态 Linux 模拟器）→ 启动内置 Alpine →
 # 里面跑 Node 22 + 原版 @deepseek-ai/dsh → 起 dsh web → WKWebView 显示官方 Web UI。
 # 全程在手机上，不连电脑、不连服务器。
+#
+# 两个 job 并行：
+#   pinned  → 用上游锁定的 dsh 版本（保证能编出来）
+#   latest  → 升到官方最新 dsh（追求"和原版一模一样"）
 
 name: build-dshios-unsigned
 
@@ -17,23 +21,38 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 180
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tag: pinned
+            dsh: pinned
+          - tag: latest
+            dsh: 0.1.5-rc.2
+
     steps:
       - name: 拉代码
         uses: actions/checkout@v4
 
-      - name: 装构建工具（iSH 的 guest VDSO 需要 LLVM 的链接器）
+      - name: 装构建工具
         run: |
-          brew install lld meson ninja
+          # lld: iSH 的 guest VDSO 要用 LLVM 的链接器
+          # libarchive + pkg-config: tools/fakefsify 只有在 libarchive 找到时才编译
+          #   （src: ish-arm64/tools/meson.build 第 24-39 行）
+          brew install lld meson ninja libarchive pkg-config
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
-          ld.lld --version
-          meson --version
-          ninja --version
+          echo "lld: $(ld.lld --version | head -n 1)"
+          echo "meson: $(meson --version)"
+          echo "ninja: $(ninja --version)"
+          echo "--- libarchive 可见性 ---"
+          pkg-config --modversion libarchive || echo "pkg-config 看不到 libarchive"
+          pkg-config --cflags --libs libarchive || true
+          ls -d /opt/homebrew/opt/libarchive 2>/dev/null || true
 
       - name: 查工具链版本
         run: |
           xcodebuild -version
           ruby -v
-          gem list xcodeproj || true
           node -v
           npm -v
 
@@ -42,14 +61,28 @@ jobs:
           gem install xcodeproj --no-document || true
           gem list xcodeproj
 
+      - name: 把 dsh 版本改成矩阵指定的那个（latest 用）
+        if: matrix.dsh != 'pinned'
+        env:
+          DSH_VERSION: ${{ matrix.dsh }}
+        run: |
+          echo "目标 dsh 版本: ${DSH_VERSION}"
+          node -e "const fs=require('fs');const p='rootfs/staging/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.dependencies['@deepseek-ai/dsh']=process.env.DSH_VERSION;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');console.log('pinned ->',j.dependencies)"
+          rm -f rootfs/staging/package-lock.json
+
       - name: 编译 iSH-ARM64 模拟器
         run: |
           make emulator
+          echo "--- 产物检查 ---"
           ls -l ish-arm64/build-arm64-release/ish
           ls -l ish-arm64/build-arm64-release/tools/fakefsify
+          ls -l ish-arm64/build-arm64-release/tools/unfakefsify || true
 
       - name: 构建 guest 根文件系统（Alpine + Node 22 + 原版 dsh）
+        env:
+          DSH_VERSION: ${{ matrix.dsh }}
         run: |
+          if [ "$DSH_VERSION" = "pinned" ]; then unset DSH_VERSION; fi
           make rootfs
           ls -lh build/root.tar.gz
 
@@ -87,8 +120,11 @@ jobs:
           tail -n 15 build/xcodebuild.log
 
       - name: 打成一个未签名的 ipa
+        env:
+          TAG: ${{ matrix.tag }}
         run: |
           set -euo pipefail
+          # 变量后面不要紧跟非 ASCII 字符，bash 会把多字节字符当成变量名的一部分
           APP_PATH=$(find build/dd/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
           echo "app: $APP_PATH"
           if [ ! -d "$APP_PATH" ]; then
@@ -96,15 +132,15 @@ jobs:
             find build/dd/Build/Products -maxdepth 3 -name '*.app' || true
             exit 1
           fi
-          rm -rf Payload DSHIOS-unsigned.ipa
+          rm -rf Payload "DSHIOS-${TAG}-unsigned.ipa"
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
-          zip -qry DSHIOS-unsigned.ipa Payload
-          ls -lh DSHIOS-unsigned.ipa
+          zip -qry "DSHIOS-${TAG}-unsigned.ipa" Payload
+          ls -lh "DSHIOS-${TAG}-unsigned.ipa"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: DSHIOS-unsigned-ipa
-          path: DSHIOS-unsigned.ipa
+          name: DSHIOS-ipa-${{ matrix.tag }}
+          path: DSHIOS-${{ matrix.tag }}-unsigned.ipa
           retention-days: 14
