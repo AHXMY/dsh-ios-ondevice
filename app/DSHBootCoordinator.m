@@ -7,6 +7,7 @@
 #import "DSHHarness.h"
 #import "DSHRootUpgrader.h"
 #import "DSHHostBridge.h"
+#import "DSHModelForwarder.h"
 #import "DSHDeviceCapability.h"
 #import "DSHEventKitCapability.h"
 #import "DSHHealthCapability.h"
@@ -145,6 +146,16 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
     if ([bridge start]) {
         NSMutableDictionary *env = [DSHHarness.shared.extraEnvironment mutableCopy];
         [env addEntriesFromDictionary:bridge.guestEnvironment];
+        // Model traffic leaves through the host. Inside the app the guest's
+        // sockets are passed through to the host, but iOS refuses the host's
+        // outbound connects on some systems: the guest then sees
+        // EHOSTUNREACH for every non-loopback address while loopback keeps
+        // working, so no model request can go out. The app itself has network,
+        // so the guest talks plain HTTP to this loopback forwarder instead.
+        if ([DSHModelForwarder.shared start])
+            [env addEntriesFromDictionary:DSHModelForwarder.shared.guestEnvironment];
+        else
+            [DSHHarness.shared.log append:@"[dsh-ios] model forwarder could not start; the guest will call the model API directly"];
         DSHHarness.shared.extraEnvironment = env;
     } else {
         [DSHHarness.shared.log append:@"[dsh-ios] host bridge could not start; iOS capabilities are unavailable"];
