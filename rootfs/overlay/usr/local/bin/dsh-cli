@@ -38,6 +38,31 @@ fi
 : "${DEEPSEEK_BASE_URL:=http://127.0.0.1:31337}"
 export DEEPSEEK_BASE_URL
 
+# Unconfined, and no approval prompts -- which is not a shortcut, it is the only
+# setting that works here.
+#
+# dsh-base defaults to sandbox `workspace-write` + approval `ask`
+# (packages/*/dsh-base/cordis.patch.yml). Neither half can function in this
+# guest:
+#   * The confining executors are `dsh-bash-sandbox` / `dsh-fs-sandbox`, and
+#     dsh-sandbox-local runs Linux commands under bwrap or the Landlock
+#     launcher. The guest kernel has neither, and an unusable runner fails
+#     closed with SANDBOX_UNAVAILABLE -- never a silent unconfined run -- so
+#     every bash call and every write would be refused.
+#   * Approval is answered by the composed answerers, and only a UI channel (or
+#     the ACP bridge) provides one. Headless has neither, so `ask` fails closed
+#     to `unavailable`: any sensitive action is rejected before it runs.
+#
+# dsh-base reads this one variable for both knobs: the sandbox policy takes it
+# as its mode, and the approval policy resolves to `never` exactly when it says
+# `danger-full-access`. The browser profile reaches the same place through a
+# patch layer (rootfs/overlay/usr/local/share/dsh/cordis.patch.yml), which is
+# installed into profiles/web only -- and there a human can answer prompts, so
+# it keeps `ask`. Anything shell-shaped or file-writing is otherwise unusable
+# from here.
+: "${DSH_PERMISSION_MODE:=danger-full-access}"
+export DSH_PERMISSION_MODE
+
 # Never exit over setup trouble: the terminal that runs this starts a fresh
 # session the moment it ends, so an exit here would respawn in a loop. Falling
 # through to the prompt leaves the failure visible and recoverable instead.
