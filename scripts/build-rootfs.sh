@@ -140,26 +140,37 @@ rm -rf payload/usr/local/lib/node_modules/@img/sharp-linux-arm64 \
        payload/usr/local/lib/node_modules/@img/sharp-libvips-linux-arm64 \
        payload/usr/local/lib/node_modules/@img/sharp-wasm32
 if [ -d payload/usr/local/lib/node_modules/@img ]; then
-    # Only the platform binaries are pruned; the plain-JavaScript packages @img
-    # also ships (colour, imported by sharp/dist/colour.mjs) must survive, or the
-    # tree dies with "Cannot find package '@img/colour'".
+    # Keep exactly what this musl arm64 guest loads and drop every other platform:
+    #   colour                       plain JS, imported by sharp/dist/colour.mjs
+    #   sharp-linuxmusl-arm64        the sharp binding
+    #   sharp-libvips-linuxmusl-arm64  the libvips runtime it dlopens
     #
-    # ...and so must the musl pair. The previous rule matched 'sharp-linux*' and
-    # 'sharp-libvips-linux*', which swallow sharp-linuxmusl-arm64 and
-    # sharp-libvips-linuxmusl-arm64 -- exactly the two this musl guest loads. The
-    # result on device was "Could not load the sharp module using the
-    # linuxmusl-arm64 runtime" from @deepseek-ai/dsh-attachment-local, which the
-    # plugin loader reports as a failed entry import. Excluding the musl names
-    # explicitly keeps every other platform out and these two in.
+    # Two earlier versions of this rule were both wrong, in ways the build did not
+    # notice:
+    #   'sharp-linux*' / 'sharp-libvips-linux*'   matched the musl pair too, so the
+    #       guest got "Could not load the sharp module using the linuxmusl-arm64
+    #       runtime" from @deepseek-ai/dsh-attachment-local;
+    #   'sharp-*' ! -name 'sharp-linuxmusl-arm64'   still matched the libvips one
+    #       (it starts with sharp- as well), so the pair came back half-pruned.
+    # Written as an allow-list now: anything named sharp* that is not one of the
+    # two keepers goes, everything else stays. Verified against a synthetic @img
+    # holding all 25 platform names plus colour.
     find payload/usr/local/lib/node_modules/@img -mindepth 1 -maxdepth 1 \
-        \( -name 'sharp-*' ! -name 'sharp-linuxmusl-arm64' -o \
-           -name 'sharp-libvips-*' ! -name 'sharp-libvips-linuxmusl-arm64' \) \
+        ! -name 'colour' \
+        ! -name 'sharp-linuxmusl-arm64' \
+        ! -name 'sharp-libvips-linuxmusl-arm64' \
+        -name 'sharp*' \
         -exec rm -rf {} + 2>/dev/null || true
-    for keep in sharp-linuxmusl-arm64 sharp-libvips-linuxmusl-arm64 colour; do
-        [ -e "payload/usr/local/lib/node_modules/@img/$keep" ] ||
-            die "@img/$keep was pruned but this guest needs it"
-    done
     echo "  @img kept: $(ls payload/usr/local/lib/node_modules/@img 2>/dev/null | tr '\n' ' ')"
+    missing=""
+    for keep in sharp-linuxmusl-arm64 sharp-libvips-linuxmusl-arm64 colour; do
+        [ -e "payload/usr/local/lib/node_modules/@img/$keep" ] || missing="$missing $keep"
+    done
+    [ -z "$missing" ] ||
+        die "@img is missing:$missing (this guest loads the musl arm64 pair; check whether npm staged it at all)"
+    leftover="$(ls payload/usr/local/lib/node_modules/@img 2>/dev/null |
+        grep -Ev '^(colour|sharp-linuxmusl-arm64|sharp-libvips-linuxmusl-arm64)$' | tr '\n' ' ')"
+    [ -z "$leftover" ] || echo "  note: other @img entries left in place: $leftover"
 fi
 cp "$ISH_SRC"/app/RootfsPatch.bundle/files/lib/*.js payload/lib/
 # Record the overlay version so the app does not re-apply (and downgrade) the
