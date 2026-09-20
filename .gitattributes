@@ -10,3 +10,7 @@
 # "#!/bin/sh\r" and the whole app stops booting. Same rule, named explicitly.
 /rootfs/overlay/usr/local/bin/* text eol=lf
 /rootfs/overlay/usr/local/share/dsh/*.yml text eol=lf
+
+# Hooks are shell scripts too: a CRLF shebang makes sh refuse to run them.
+/hooks/* eol=lf
+/scripts/*.sh eol=lf
