@@ -110,6 +110,25 @@ if [ -r /proc/ish/documents ]; then
                     fi
                 fi
             fi
+            # Session restore: a tarball of $DSH_HOME/sessions dropped in Documents
+            # is unpacked before the harness starts. A reinstall (Sideloadly
+            # uninstalls first, so iOS deletes the container) otherwise loses every
+            # conversation, and AFC cannot bring them back -- it can overwrite
+            # existing files but new ones never appear in iSH's metadata. This runs
+            # inside the guest, so it can create them. Same shape as the preset:
+            # applied only when the sha differs from the marker.
+            if [ -f "$HOST_DOCS_MNT/dsh-sessions.tar.gz" ]; then
+                swant=$(cat "$HOST_DOCS_MNT/dsh-sessions.sha256" 2>/dev/null | tr -d ' \r\n' || true)
+                shave=$(cat "$DSH_HOME/.sessions-restored-sha" 2>/dev/null | tr -d ' \r\n' || true)
+                if [ -n "$swant" ] && [ "$swant" != "$shave" ]; then
+                    mkdir -p "$DSH_HOME/sessions" 2>/dev/null || true
+                    if tar xzf "$HOST_DOCS_MNT/dsh-sessions.tar.gz" -C "$DSH_HOME/sessions" 2>/dev/null; then
+                        printf '%s\n' "$swant" >"$DSH_HOME/.sessions-restored-sha" 2>/dev/null || true
+                        printf '\033[1;32m已恢复历史会话（%s）\033[0m\n' "$(printf '%s' "$swant" | cut -c1-12)"
+                        sleep 1
+                    fi
+                fi
+            fi
             umount "$HOST_DOCS_MNT" 2>/dev/null || true
         fi
     fi
