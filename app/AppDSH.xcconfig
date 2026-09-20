@@ -11,6 +11,11 @@ DSH_BUNDLE_ID_PREFIX = com.xnuapp
 PRODUCT_BUNDLE_IDENTIFIER = $(DSH_BUNDLE_ID_PREFIX).dsh
 PRODUCT_APP_GROUP_IDENTIFIER = group.$(DSH_BUNDLE_ID_PREFIX).dsh
 
+// Home-screen name. The CLI-only build overrides this -- plus PRODUCT_NAME,
+// PRODUCT_BUNDLE_IDENTIFIER and GCC_PREPROCESSOR_DEFINITIONS -- on the
+// xcodebuild command line, so one project produces two installable apps.
+DSH_DISPLAY_NAME = DSHIOS
+
 MARKETING_VERSION = 1.0.16
 CURRENT_PROJECT_VERSION = 18
 

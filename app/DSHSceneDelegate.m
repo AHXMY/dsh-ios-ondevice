@@ -5,6 +5,9 @@
 
 #import "DSHSceneDelegate.h"
 #import "DSHRootViewController.h"
+#if DSH_CLI_ONLY
+#import "DSHCLIViewController.h"
+#endif
 #import "AppDelegate.h"
 #import "AboutViewController.h"
 
@@ -19,7 +22,12 @@
         ((AboutViewController *) vc.topViewController).recoveryMode = YES;
         self.window.rootViewController = vc;
     } else {
+#if DSH_CLI_ONLY
+        // CLI-only build: same guest, terminal front end, no web server.
+        self.window.rootViewController = [[DSHCLIViewController alloc] init];
+#else
         self.window.rootViewController = [[DSHRootViewController alloc] init];
+#endif
     }
     [self.window makeKeyAndVisible];
 }

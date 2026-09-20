@@ -26,6 +26,15 @@ export PATH HOME DSH_HOME
 # forwarder on the host and this points dsh at it. dsh accepts the base URL
 # only from the launching environment -- never from a .env file -- so it has to
 # be exported here. Override it to talk to a real endpoint instead.
+#
+# The app also leaves the host bridge URL and token in .host-bridge.env, which
+# is what makes the iOS capability tools (device, calendar, photos, ...) work
+# from this CLI the same way they do in the browser surface.
+if [ -r "$DSH_HOME/.host-bridge.env" ]; then
+	set -a
+	. "$DSH_HOME/.host-bridge.env"
+	set +a
+fi
 : "${DEEPSEEK_BASE_URL:=http://127.0.0.1:31337}"
 export DEEPSEEK_BASE_URL
 

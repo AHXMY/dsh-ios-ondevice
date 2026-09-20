@@ -21,6 +21,7 @@
 #import "DSHActivityCapability.h"
 #import "DSHStartupMetrics.h"
 #import "AppDelegate.h"
+#import "ISHShellExecutor.h"
 #import <UIKit/UIKit.h>
 
 NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidChangeNotification";
@@ -128,7 +129,6 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
 }
 
 - (void)finishReady {
-    [self setPhase:DSHBootPhaseReady message:@"Starting DeepSeek Harness…" progress:-1];
     // The host bridge must be listening before dsh-serve starts: its URL and
     // token reach the guest through the server's environment.
     DSHHostBridge *bridge = DSHHostBridge.shared;
@@ -157,11 +157,50 @@ NSNotificationName const DSHBootStateDidChangeNotification = @"DSHBootStateDidCh
         else
             [DSHHarness.shared.log append:@"[dsh-ios] model forwarder could not start; the guest will call the model API directly"];
         DSHHarness.shared.extraEnvironment = env;
+        [self writeGuestShellEnvironment:env];
     } else {
         [DSHHarness.shared.log append:@"[dsh-ios] host bridge could not start; iOS capabilities are unavailable"];
     }
     [DSHStartupMetrics.shared mark:@"bridge_ready"];
+#if DSH_CLI_ONLY
+    // The CLI build has nothing to supervise: `dsh-cli` runs dsh's one-shot
+    // headless form in the terminal, with no listening port, no WKWebView and
+    // none of the client-plugin bundling that dominates startup. Starting
+    // dsh-serve here would only spend the guest's CPU on a server no part of
+    // this app ever connects to.
+    [DSHHarness.shared.log append:@"[dsh-ios] CLI-only build: no dsh-serve to start"];
+    [self setPhase:DSHBootPhaseReady message:@"Starting the harness CLI…" progress:-1];
+#else
+    [self setPhase:DSHBootPhaseReady message:@"Starting DeepSeek Harness…" progress:-1];
     [DSHHarness.shared start];
+#endif
+}
+
+/// Terminal sessions inherit nothing but TERM (see
+/// -[TerminalViewController startSession]), so environment the app wants the
+/// guest's shells to have has to be written into the guest instead of exported.
+/// `dsh-cli` and /etc/profile.d/dsh-forwarder.sh read this file.
+///
+/// Synchronous on purpose: the CLI build hands the screen to `dsh-cli` the
+/// moment the boot phase turns ready, and the bridge URL has to be on disk
+/// before that terminal starts.
+- (void)writeGuestShellEnvironment:(NSDictionary<NSString *, NSString *> *)environment {
+    if (environment.count == 0)
+        return;
+    NSMutableString *body = [NSMutableString string];
+    for (NSString *key in [environment.allKeys sortedArrayUsingSelector:@selector(compare:)])
+        [body appendFormat:@"%@='%@'\n", key, environment[key]];
+    // A quoted heredoc delimiter passes the body through verbatim; every value
+    // here is a URL or hex token this app generated, so none can contain a line
+    // equal to the delimiter.
+    NSString *script = [NSString stringWithFormat:
+        @"umask 077\nmkdir -p /root/.dsh\ncat > /root/.dsh/.host-bridge.env <<'DSH_ENV_EOF'\n%@DSH_ENV_EOF\n",
+        body];
+    ISHShellExecutionResult *result = [ISHShellExecutor executeCommandSync:script timeout:5 lineCallback:nil];
+    if (result.exitCode != 0)
+        [DSHHarness.shared.log append:[NSString stringWithFormat:
+            @"[dsh-ios] could not write the guest shell environment (exit %d, error %d)",
+            result.exitCode, (int) result.error]];
 }
 
 @end
