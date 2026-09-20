@@ -173,6 +173,15 @@ if [ -r /proc/ish/documents ]; then
                             rmdir "$DSH_HOME/sessions/sessions" 2>/dev/null || true
                         fi
                         printf '%s\n' "$swant" >"$DSH_HOME/.sessions-restored-sha" 2>/dev/null || true
+                        # A restored conversation is a conversation from another
+                        # installation, and resuming one rebuilds the composition
+                        # that produced it -- which is exactly what a session
+                        # created before this deployment's profile patch carries:
+                        # no model route at all. Auto-resuming such a session is
+                        # how a fresh install turns into "has no provider/model"
+                        # every single time. Start clean instead; the history is
+                        # still there for the user to pick with /resume.
+                        touch "$DSH_HOME/.sessions-just-restored" 2>/dev/null || true
                         count=$(ls -1d "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | wc -l | tr -d ' ')
                         printf '\033[1;32m已恢复历史会话 %s 个（%s）\033[0m\n' "$count" "$(printf '%s' "$swant" | cut -c1-12)"
                         sleep 1
@@ -277,6 +286,16 @@ if [ "$#" -eq 0 ]; then
     if take_pending_preset; then
         # A preset was just chosen: it only takes effect on a session that has
         # not started, so resuming the previous one would defeat the request.
+        resume_arg=""
+    elif [ -f "$DSH_HOME/.sessions-just-restored" ]; then
+        # Conversations were just unpacked from the snapshot, which means this
+        # installation has no history of its own yet. Those sessions were
+        # created under an older composition, and resuming one rebuilds that
+        # composition -- without this deployment's model route, so the first
+        # message fails with "has no provider/model". Start clean, once; /resume
+        # still lists everything.
+        rm -f "$DSH_HOME/.sessions-just-restored" 2>/dev/null || true
+        printf '  历史会话已就绪（用 /resume 选择），本次开新会话\n'
         resume_arg=""
     else
         newest=$(ls -1dt "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | head -n 1 || true)
