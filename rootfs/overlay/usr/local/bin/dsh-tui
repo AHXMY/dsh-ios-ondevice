@@ -431,11 +431,25 @@ const memory = path.join(home, 'node-memory.log');
 const started = Date.now();
 const mb = (bytes) => (bytes / 1048576).toFixed(1);
 
+// A body that runs inside the harness. Its one job is to be the only witness to
+// how the process ends, so a write that fails has to say so: a swallowed error
+// here turns "the log is empty" into "nothing happened", which is exactly the
+// mistake this probe exists to avoid.
+const warned = new Set();
 const say = (file, message) => {
     try {
         fs.appendFileSync(file, new Date().toISOString() + '  +' +
             ((Date.now() - started) / 1000).toFixed(1) + 's  ' + message + '\n');
-    } catch {}
+    } catch (error) {
+        const key = file + ':' + (error && error.code);
+        if (!warned.has(key)) {
+            warned.add(key);
+            try {
+                process.stderr.write('probe: cannot write ' + file + ' (' +
+                    ((error && error.code) || error) + ')\n');
+            } catch {}
+        }
+    }
 };
 
 const guestAvailableMb = () => {
@@ -600,8 +614,58 @@ while :; do
     # rebuilt, not at anything inside the harness. The preload below records the
     # order of events (beforeExit, stdin end/close, signals) so the next exit has
     # a cause attached instead of a theory.
+    # Diagnostic twin: a plain node process, no terminal attached, started
+    # alongside the harness.
+    #
+    # The question it answers is whether the killer is inside the harness or
+    # outside it. This process cannot leak, cannot exit on its own, and has no tty
+    # to lose, so if it dies at the same cadence then whatever kills the harness
+    # kills everything in the guest; if it outlives the harness, the harness is
+    # the target specifically.
+    (
+        # Its own process group, so a kill aimed at the foreground group takes the
+        # harness and leaves this one alone -- that difference is the answer.
+        if command -v setsid >/dev/null 2>&1; then
+            setsid node -e 'const fs = require("fs"); const p = process.env.DSH_HOME + "/twin.log"; fs.appendFileSync(p, new Date().toISOString() + "  twin start node pid=" + process.pid + "\n"); process.on("exit", (c) => fs.appendFileSync(p, new Date().toISOString() + "  twin exit code=" + c + "\n")); setInterval(() => {}, 3600000);' >/dev/null 2>&1
+        else
+            node -e 'const fs = require("fs"); const p = process.env.DSH_HOME + "/twin.log"; fs.appendFileSync(p, new Date().toISOString() + "  twin start node pid=" + process.pid + " (no setsid)\n"); process.on("exit", (c) => fs.appendFileSync(p, new Date().toISOString() + "  twin exit code=" + c + "\n")); setInterval(() => {}, 3600000);' >/dev/null 2>&1
+        fi
+    ) &
+    twin=$!
+
     node --trace-exit --require "$DSH_HOME/node-events.cjs" --expose-internals "$DSH_BIN" --profile tui $resume_arg "$@" 2>"$DSH_HOME/tui.err"
     status=$?
+
+    # Did the twin outlive it? (see the comment where the twin starts)
+    if kill -0 "$twin" 2>/dev/null; then
+        printf '%s  twin alive after round %s (the harness died first)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" >>"$DSH_HOME/twin.log"
+        kill "$twin" 2>/dev/null
+    else
+        printf '%s  twin gone too at round %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" >>"$DSH_HOME/twin.log"
+    fi
+    wait "$twin" 2>/dev/null
+
+    # Post-mortem: the kernel's version and the process table at the moment of
+    # death. Nothing inside the harness runs at that moment, so the cause has to
+    # be recorded from outside it -- and until now nothing was.
+    {
+        printf '\n===== %s  round=%s  exit=%s =====\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" "$status"
+        printf -- '--- dmesg ---\n'
+        dmesg 2>&1 | tail -n 30
+        printf -- '--- ps ---\n'
+        ps 2>&1 | tail -n 20
+        printf -- '--- free ---\n'
+        free -m 2>&1 | head -n 3
+        printf -- '--- tty size ---\n'
+        stty size 2>&1
+        printf -- '--- last events recorded inside the harness ---\n'
+        tail -n 4 "$DSH_HOME/node-events.log" 2>/dev/null
+    } >>"$DSH_HOME/postmortem.log" 2>&1 || true
+    if [ -f "$DSH_HOME/postmortem.log" ]; then
+        tail -n 400 "$DSH_HOME/postmortem.log" >"$DSH_HOME/.pm.tmp" 2>/dev/null &&
+            mv "$DSH_HOME/.pm.tmp" "$DSH_HOME/postmortem.log" 2>/dev/null
+    fi
+
     printf '\n\033[1;33m终端已重启（第 %s 轮）\033[0m\n' "$((round + 1))"
     [ -s "$DSH_HOME/tui.err" ] && tail -n 5 "$DSH_HOME/tui.err"
     # Keep a durable record: the on-screen notice is replaced by the next round
