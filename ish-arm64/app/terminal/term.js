@@ -138,6 +138,65 @@ hterm.ScrollPort.prototype.syncScrollHeight = function() {
 };
 term.scrollPort_.screen_.addEventListener('scroll', syncScroll);
 
+// Drag to page through history on the alternate screen.
+//
+// The override above hands touch handling to native, which is what the primary
+// screen wants: native drives the scroll position there, and the scrollback is
+// real. The alternate screen has no scrollback to drive -- the program owns the
+// screen -- so a drag on it did nothing at all, which is exactly what "I cannot
+// swipe up to read what just happened" is. A fullscreen TUI pages with its own
+// keys, so the gesture is translated into those (the sequences a terminal sends
+// for Page Up / Page Down) instead of being swallowed.
+(function () {
+    const el = term.scrollPort_.screen_;
+    const onAltScreen = () => term.screen_ === term.alternateScreen_;
+    const selecting = () => {
+        const sel = document.getSelection();
+        return sel != null && sel.rangeCount > 0 && !sel.isCollapsed;
+    };
+    const stepPx = () => Math.max(24, (term.scrollPort_.characterSize.height || 16) * 4);
+    let active = false;
+    let lastY = 0;
+    let accum = 0;
+
+    el.addEventListener('touchstart', (e) => {
+        if (!onAltScreen() || selecting() || e.touches.length !== 1) {
+            active = false;
+            return;
+        }
+        active = true;
+        accum = 0;
+        lastY = e.touches[0].clientY;
+    }, {passive: true});
+
+    el.addEventListener('touchmove', (e) => {
+        if (!active || e.touches.length !== 1)
+            return;
+        if (e.cancelable)
+            e.preventDefault();
+        const y = e.touches[0].clientY;
+        accum += y - lastY;          // dragging down asks for earlier output
+        lastY = y;
+        const step = stepPx();
+        while (Math.abs(accum) >= step) {
+            if (accum > 0) {
+                native.sendInput('\x1b[5~');
+                accum -= step;
+            } else {
+                native.sendInput('\x1b[6~');
+                accum += step;
+            }
+        }
+    }, {passive: false});
+
+    const endDrag = () => {
+        active = false;
+        accum = 0;
+    };
+    el.addEventListener('touchend', endDrag, {passive: true});
+    el.addEventListener('touchcancel', endDrag, {passive: true});
+})();
+
 exports.updateStyle = ({foregroundColor, backgroundColor, fontFamily, fontSize, colorPaletteOverrides, blinkCursor, cursorShape}) => {
     term.getPrefs().set('background-color', backgroundColor);
     term.getPrefs().set('foreground-color', foregroundColor);
