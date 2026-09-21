@@ -8,6 +8,7 @@
 #import "DSHModelForwarder.h"
 #import "DSHHarness.h"
 #import <mach/mach.h>
+#include <execinfo.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
@@ -48,8 +49,15 @@ static void DSHCrashNote(const char *what) {
 
 static void DSHFatalSignalHandler(int sig) {
     char buffer[64];
-    snprintf(buffer, sizeof(buffer), "fatal signal %d", sig);
+    snprintf(buffer, sizeof(buffer), "fatal signal %d, backtrace:", sig);
     DSHCrashNote(buffer);
+    // A signal number alone says "it trapped", not where. backtrace_symbols_fd
+    // writes straight to the descriptor without allocating, which is what makes
+    // a stack usable from inside a handler at all.
+    void *frames[64];
+    int depth = backtrace(frames, 64);
+    if (dshCrashFd >= 0 && depth > 0)
+        backtrace_symbols_fd(frames, depth, dshCrashFd);
     signal(sig, SIG_DFL);
     raise(sig);
 }

@@ -225,11 +225,46 @@ static void DSHReleaseForwardSlot(void) {
     }
 }
 
+#pragma mark - Failure logging
+
+/// Log a failed forward, at most ten times a minute.
+///
+/// When the network goes away the guest retries in a loop, and every attempt the
+/// forwarder could not serve wrote its own line -- each one fsync'd, because the
+/// app's own lines are flushed as they are written. Measured on device: thousands
+/// of lines over a few hours, and the app finally died with a `fatal signal 5` and
+/// nothing else in the log, because the interesting failure was buried in the
+/// flood. Ten lines, then one summary per minute, is enough to see what happened.
+static void DSHLogForwardFailure(NSString *label, NSString *message) {
+    static NSUInteger burst = 0;
+    static NSUInteger suppressed = 0;
+    static NSDate *windowStart = nil;
+    @synchronized (DSHModelForwarder.class) {
+        NSDate *now = NSDate.date;
+        if (windowStart == nil || [now timeIntervalSinceDate:windowStart] >= 60) {
+            if (suppressed > 0) {
+                [DSHHarness.shared.log append:[NSString stringWithFormat:
+                    @"[dsh-ios] forward: %lu more failures in the previous minute (suppressed)",
+                    (unsigned long) suppressed]];
+            }
+            windowStart = now;
+            burst = 0;
+            suppressed = 0;
+        }
+        if (burst < 10) {
+            burst++;
+            [DSHHarness.shared.log append:[NSString stringWithFormat:
+                @"[dsh-ios] forward %@ failed: %@", label, message]];
+        } else {
+            suppressed++;
+        }
+    }
+}
+
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
     if (error != nil && !self.headSent) {
         NSString *message = error.localizedDescription ?: @"upstream failed";
-        [DSHHarness.shared.log append:[NSString stringWithFormat:
-            @"[dsh-ios] forward %@ failed: %@", self.label, message]];
+        DSHLogForwardFailure(self.label, message);
         [self refuseWithStatus:502 reason:@"Bad Gateway" message:message];
         return;
     }
