@@ -1764,19 +1764,16 @@ hterm.Terminal.prototype.setupScrollPort_ = function() {
   // UI binds.
   let dragPending = 0;
   this.scrollPort_.onTouchScroll = (delta) => {
-    // The alternate screen is the signal, not mouse reporting.
+    // Only a full-screen application takes the gesture.
     //
-    // A full-screen application is on the alternate screen and owns its own
-    // viewport, so hterm's scrollback is empty by construction and a drag has
-    // nowhere to go -- while a shell session on the primary screen keeps its
-    // scrollback and must keep the native behaviour. Mouse reporting looked like
-    // the tighter test, but it is only a convention: it depends on the
-    // application's escape sequences surviving the whole path into this parser,
-    // and when they do not, the check silently disables the only scrolling
-    // gesture a phone has.
+    // It is on the alternate screen and keeps its own transcript, so hterm's
+    // scrollback -- which belongs to the primary screen and survives the switch,
+    // which is why dragging "scrolled" something invisible and stopped -- is the
+    // wrong thing to move. Answering false leaves a normal shell's scrolling
+    // exactly as it was.
     if (this.screen_ !== this.alternateScreen_) {
       dragPending = 0;
-      return;
+      return false;
     }
     // A change of direction starts a fresh gesture, so a reversal answers
     // immediately instead of first spending a leftover accumulation.
@@ -1793,6 +1790,7 @@ hterm.Terminal.prototype.setupScrollPort_ = function() {
         this.onVTKeystroke('\x1b[5~');
       }
     }
+    return true;
   };
 
   screenNode.addEventListener(
