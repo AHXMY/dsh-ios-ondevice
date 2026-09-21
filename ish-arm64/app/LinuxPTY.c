@@ -35,8 +35,10 @@ struct ios_pty {
     nsobj_t terminal;
     struct linux_tty linux_tty;
     // pseudoterminals have multiple wait queues and you need a different wait_queue_entry for each one. fun fact!
+    // (Eight, not four: a tty gains queues as its state changes, and hitting the
+    // ceiling used to be fatal. See poll_callback.)
     int n_wqs;
-    struct ios_pty_wq wqs[4];
+    struct ios_pty_wq wqs[8];
     poll_table pt;
 
     struct work_struct poll_cb_work;
@@ -129,8 +131,29 @@ static int ptm_callback(struct wait_queue_entry *wq_entry, unsigned mode, int fl
 
 static void poll_callback(struct file *file, wait_queue_head_t *whead, poll_table *pt) {
     struct ios_pty *pty = container_of(pt, struct ios_pty, pt);
-    if (pty->n_wqs >= ARRAY_SIZE(pty->wqs))
-        panic("ios pty: too many wait queues!");
+    // One entry per wait queue, ever.
+    //
+    // The kernel calls this for every queue the polled file waits on, and a tty
+    // grows queues as its state changes (a window-size change is one of those
+    // transitions). Registering the same queue twice would consume slots for
+    // nothing, so reuse the existing entry when the head is already known.
+    for (int i = 0; i < pty->n_wqs; i++) {
+        if (pty->wqs[i].head == whead)
+            return;
+    }
+    if (pty->n_wqs >= ARRAY_SIZE(pty->wqs)) {
+        // Degrade, never panic.
+        //
+        // This used to be `panic("ios pty: too many wait queues!")`, and a panic
+        // in this kernel takes down the process that happened to be polling the
+        // terminal -- measured on device as the harness dying with an empty
+        // stderr and no callback inside it running, seconds after the keyboard
+        // resized the terminal. A terminal that misses one wakeup source is a
+        // terminal that redraws late; killing the reader is not a recovery.
+        printk(KERN_WARNING "ios: pty poll queue limit reached (%d), skipping new head\n",
+               pty->n_wqs);
+        return;
+    }
     struct ios_pty_wq *pty_wq = &pty->wqs[pty->n_wqs++];
     pty_wq->pty = pty;
     pty_wq->head = whead;

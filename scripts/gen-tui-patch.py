@@ -15,10 +15,10 @@ import os
 import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)                      # 仓库根
-PRISTINE = os.environ.get('DSH_TUI_PRISTINE', '') # 原包：pnpm 装着的那份 lib/index.js
-PAIRS = os.path.join(HERE, 'tui-zh-pairs.json')   # 已上机的 75 条，从 bundle diff 反推
-OUT = os.path.join(HERE, 'patch-tui-zh.mjs')
+REPO = os.path.join(os.path.dirname(HERE), 'DSHIOS-real')
+PRISTINE = os.path.join(HERE, 'dsh-tui-lib-index.orig.js')
+PAIRS = os.path.join(os.environ.get('TEMP', '.'), 'zh-pairs.json')
+OUT = os.path.join(REPO, 'scripts', 'patch-tui-zh.mjs')
 
 # This round's additions, on top of the extracted pairs.
 BATCH_B = [
@@ -77,9 +77,31 @@ BATCH_B = [
     ('"Reasoning text"', '"思考内容"'),
 ]
 
-# The /preset command. Kept as text so the emitted script carries it verbatim.
+# The /new and /preset commands. Kept as text so the emitted script carries them
+# verbatim.
 INSERT_BEFORE = '\t\tconst exitHandler = () => {'
-INSERT_CODE = '''\t\t// /preset -- list presets or switch this session onto one.
+INSERT_CODE = '''\t\t// /new -- start a new conversation.
+\t\t//
+\t\t// A session cannot replace itself while it is running, and this deployment
+\t\t// puts the previous one back after an unexpected restart (the harness ends on
+\t\t// its own every few minutes on this platform). So the request is recorded
+\t\t// where the launcher looks for it and the next start comes up empty. The
+\t\t// marker survives an exit, which is what makes /exit straight after it do
+\t\t// what the user means.
+\t\tcommandCtx.commands.register({
+\t\t\tname: "new",
+\t\t\tdescription: "开一个新会话（输入 /exit 立即生效）",
+\t\t\thandler: () => {
+\t\t\t\ttry {
+\t\t\t\t\twriteFileSync(dshHomePath(".new-session"), `${Date.now()}\\n`);
+\t\t\t\t\tappendNotice("已记为下次启动开新会话，输入 /exit 立即生效（历史会话用 /resume 选择）", "info");
+\t\t\t\t} catch (error) {
+\t\t\t\t\tappendNotice(`无法记录新会话请求：${error?.message ?? error}`, "error");
+\t\t\t\t}
+\t\t\t\treturn { kind: "success" };
+\t\t\t}
+\t\t});
+\t\t// /preset -- list presets or switch this session onto one.
 \t\t//
 \t\t// @deepseek-ai/dsh-agent-presets allows a session to change preset only
 \t\t// while it is blank: once a turn has started the composition is mounted

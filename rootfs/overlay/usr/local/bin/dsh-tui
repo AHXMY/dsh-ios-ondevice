@@ -287,23 +287,29 @@ if [ "$#" -eq 0 ]; then
         # A preset was just chosen: it only takes effect on a session that has
         # not started, so resuming the previous one would defeat the request.
         resume_arg=""
-    elif [ -f "$DSH_HOME/.sessions-just-restored" ]; then
-        # Conversations were just unpacked from the snapshot, which means this
-        # installation has no history of its own yet. Those sessions were
-        # created under an older composition, and resuming one rebuilds that
-        # composition -- without this deployment's model route, so the first
-        # message fails with "has no provider/model".
-        rm -f "$DSH_HOME/.sessions-just-restored" 2>/dev/null || true
+    elif [ -f "$DSH_HOME/.new-session" ]; then
+        # A new conversation was asked for from inside the terminal. The TUI's
+        # /new writes this file, because a session cannot replace itself while it
+        # is running -- the request is honoured here, at the next start.
+        rm -f "$DSH_HOME/.new-session" 2>/dev/null || true
+        printf '  新会话（历史会话：输入 /resume 选择）\n'
+        resume_arg=""
+    else
+        # Otherwise put the conversation back.
+        #
+        # This is the point of the loop. The harness ends on its own every few
+        # minutes on this platform -- always status 0, always an empty stderr, no
+        # signal and no stdin event recorded inside the process, so the cause is
+        # still open. What is certain is that an unexpected restart must not cost
+        # the user their conversation: whichever session was open comes back. A
+        # fresh one is asked for explicitly, with /new.
+        newest=$(ls -1dt "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | head -n 1 || true)
+        if [ -n "$newest" ]; then
+            sid=$(basename "$newest")
+            printf '  恢复会话 %s（要开新会话：/new）\n' "$sid"
+            resume_arg="--resume=$sid"
+        fi
     fi
-    # Fresh session every time: /quit is the way to ask for one.
-    #
-    # Resuming the newest session automatically was added so a reinstall would
-    # not feel like losing the conversation, but it also made /quit pointless --
-    # you always landed back in the session you had just left -- and it kept
-    # dropping the user into long transcripts whose beginning cannot be scrolled
-    # back to on a phone. The terminal now starts empty and says where the
-    # history is; /resume is the native way to pick an older conversation.
-    printf '  新会话（历史会话：输入 /resume 选择）\n'
 fi
 
 # Run the harness in a loop, in this same terminal session.
@@ -475,11 +481,34 @@ if (!process.env.DSH_NO_HEAP_CAP) {
     } catch {}
 }
 
+// Several ways to ask for the process's real footprint.
+//
+// `process.memoryUsage().rss` came back 0 on this platform, and the guest's
+// /proc/meminfo is not trustworthy either (it reported 3786 MB free with nothing
+// used), so the only way to tell whether a memory wall is involved is to try
+// every source and keep whatever answers. A kill by the kernel's out-of-memory
+// killer leaves no trace in the process, so the number has to come from outside
+// the heap: RSS, which includes the 250 packages' code and every buffer.
+const readRssMb = () => {
+    const sources = [];
+    try {
+        const status = fs.readFileSync('/proc/self/status', 'utf8');
+        const m = /VmRSS:\s+(\d+) kB/.exec(status);
+        if (m) sources.push((m[1] / 1024).toFixed(0) + 'MB(status)');
+    } catch {}
+    try {
+        const statm = fs.readFileSync('/proc/self/statm', 'utf8').trim().split(/\s+/);
+        if (statm.length > 1) sources.push((Number(statm[1]) * 4096 / 1048576).toFixed(0) + 'MB(statm)');
+    } catch {}
+    const self = process.memoryUsage().rss / 1048576;
+    if (self > 0) sources.push(self.toFixed(0) + 'MB(hint)');
+    return sources.length ? sources.join(' ') : 'unreadable';
+};
+
 let ticks = 0;
 const timer = setInterval(() => {
     const usage = process.memoryUsage();
-    say(memory, 'rss=' + mb(usage.rss) + 'MB heapUsed=' + mb(usage.heapUsed) +
-        'MB heapTotal=' + mb(usage.heapTotal) + 'MB guest_avail/total=' + guestAvailableMb() + 'MB');
+    say(memory, 'rss=' + readRssMb() + ' heapUsed=' + mb(usage.heapUsed) + 'MB heapTotal=' + mb(usage.heapTotal) + 'MB guest=' + guestAvailableMb() + 'MB');
     ticks += 1;
     if (ticks === 1) say(events, 'memory sampling started');
 }, 10000);
@@ -515,6 +544,28 @@ DSH_NODE_EVENTS
         sleep 10
     done
 ) &
+
+# Probe self-test, run once per session.
+#
+# The harness keeps ending with status 0 while the callbacks installed inside it
+# never record a thing, and those two facts cannot both be true of the same
+# process -- unless the recording itself is what fails. This exits a throwaway
+# node process explicitly and reports whether its own exit callback managed to
+# write, which separates "nothing fired" from "the log quietly went nowhere".
+if [ ! -f "$DSH_HOME/probe-selftest.log" ] || [ "$(wc -l <"$DSH_HOME/probe-selftest.log" 2>/dev/null | tr -d ' ')" = "0" ]; then
+    node -e '
+      const fs = require("fs");
+      const target = process.env.DSH_HOME + "/probe-selftest.log";
+      const write = (line) => {
+        try { fs.appendFileSync(target, line + "\n"); }
+        catch (error) { console.error("selftest write failed: " + (error && error.code)); }
+      };
+      process.on("beforeExit", () => write("beforeExit fired"));
+      process.on("exit", (code) => write("exit fired code=" + code));
+      process.exit(7);
+    ' 2>>"$DSH_HOME/tui.err" || true
+fi
+printf '  探针自检: %s\n' "$(tr '\n' ' ' <"$DSH_HOME/probe-selftest.log" 2>/dev/null || echo '（无记录）')"
 
 round=0
 while :; do
