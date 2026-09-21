@@ -581,6 +581,69 @@ if [ ! -f "$DSH_HOME/probe-selftest.log" ] || [ "$(wc -l <"$DSH_HOME/probe-selft
 fi
 printf '  探针自检: %s\n' "$(tr '\n' ' ' <"$DSH_HOME/probe-selftest.log" 2>/dev/null || echo '（无记录）')"
 
+# Guest heartbeat, once per second, running for the life of the shell.
+#
+# It exists to answer one question that nothing else can: was the emulator itself
+# stopped? A process that is killed leaves no gap in a heartbeat; an emulator that
+# is suspended and restored does. If this file has a hole at the same moment node
+# disappears, then nothing "killed node" -- the whole guest stopped and the
+# processes that came back are the ones that survive a save/restore.
+(
+    while :; do
+        printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$DSH_HOME/heartbeat.log"
+        if [ -f "$DSH_HOME/heartbeat.log" ]; then
+            tail -n 2000 "$DSH_HOME/heartbeat.log" >"$DSH_HOME/.hb.tmp" 2>/dev/null &&
+                mv "$DSH_HOME/.hb.tmp" "$DSH_HOME/heartbeat.log" 2>/dev/null
+        fi
+        sleep 1
+    done
+) &
+
+# --- one harness at a time --------------------------------------------------
+#
+# The app opens a new terminal session every time it comes back, and nothing ever
+# stopped the previous one: each session started its own instance of this script,
+# and each of those kept its own harness alive. Measured on device: twenty node
+# processes at once, in two size classes (716 MB and 800 MB resident), i.e. at
+# least two complete dsh installs -- a harness is ~250 plugin packages.
+#
+# The pile-up is what kills the app. iOS kills the app once its memory crosses the
+# line; the guest comes back from a fork-based image restore, and a fork only
+# carries the calling thread, so every multi-threaded process (node, and nothing
+# else in this guest) is gone when it resumes. From the user's side that is the
+# terminal restarting for no reason, several times an hour.
+#
+# So: a new session takes the terminal from any earlier one. Its shell, its
+# harness, its watchers and its samplers all go first, including the orphaned
+# harnesses of sessions that died earlier (they are reparented to init, which is
+# why they were never cleaned up).
+LOCK="$DSH_HOME/dsh-tui.lock"
+children_of() {
+    ps -o pid,ppid 2>/dev/null | awk -v p="$1" '$2 == p { print $1 }'
+}
+kill_tree() {
+    for c in $(children_of "$1"); do
+        kill_tree "$c"
+        kill -9 "$c" 2>/dev/null || true
+    done
+}
+if [ -f "$LOCK" ]; then
+    old=$(cat "$LOCK" 2>/dev/null)
+    if [ -n "$old" ] && [ "$old" != "$$" ] && kill -0 "$old" 2>/dev/null; then
+        printf '%s  taking over from session pid=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$old" >>"$DSH_HOME/takeover.log"
+        kill_tree "$old"
+        kill -9 "$old" 2>/dev/null || true
+    fi
+fi
+# Orphans from sessions that were killed outright: harnesses, this script, the
+# samplers. init is their parent now, so nothing else is going to reap them.
+for pid in $(ps -o pid,ppid,args 2>/dev/null | awk '$2 == 1 && (/bin\.js/ || /dsh-tui/ || /[n]ode/) { print $1 }'); do
+    [ "$pid" = "$$" ] && continue
+    printf '%s  reaping orphan pid=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" >>"$DSH_HOME/takeover.log"
+    kill -9 "$pid" 2>/dev/null || true
+done
+printf '%s' "$$" >"$LOCK"
+
 round=0
 while :; do
     round=$((round + 1))
@@ -624,50 +687,86 @@ while :; do
     # the target specifically.
     (
         # Its own process group, so a kill aimed at the foreground group takes the
-        # harness and leaves this one alone -- that difference is the answer.
+        # harness and leaves this one alone.
+        #
+        # An empty LD_PRELOAD is what suppresses the kernel's injection: exec.c
+        # adds /lib/zero_free.so only when the program is named `node` AND no
+        # LD_PRELOAD is already in the environment. So this twin runs without the
+        # library, and the one below runs with it. Everything else about them is
+        # identical, which is what makes them a comparison rather than two more
+        # processes that died.
         if command -v setsid >/dev/null 2>&1; then
-            setsid node -e 'const fs = require("fs"); const p = process.env.DSH_HOME + "/twin.log"; fs.appendFileSync(p, new Date().toISOString() + "  twin start node pid=" + process.pid + "\n"); process.on("exit", (c) => fs.appendFileSync(p, new Date().toISOString() + "  twin exit code=" + c + "\n")); setInterval(() => {}, 3600000);' >/dev/null 2>&1
+            setsid env LD_PRELOAD= node -e 'const fs = require("fs"); const p = process.env.DSH_HOME + "/twin.log"; fs.appendFileSync(p, new Date().toISOString() + "  twin start node pid=" + process.pid + "\n"); fs.writeFileSync(process.env.DSH_HOME + "/.witness-no.pid", String(process.pid)); process.on("exit", (c) => fs.appendFileSync(p, new Date().toISOString() + "  twin exit code=" + c + "\n")); setInterval(() => {}, 3600000);' >/dev/null 2>&1
         else
-            node -e 'const fs = require("fs"); const p = process.env.DSH_HOME + "/twin.log"; fs.appendFileSync(p, new Date().toISOString() + "  twin start node pid=" + process.pid + " (no setsid)\n"); process.on("exit", (c) => fs.appendFileSync(p, new Date().toISOString() + "  twin exit code=" + c + "\n")); setInterval(() => {}, 3600000);' >/dev/null 2>&1
+            LD_PRELOAD= node -e 'const fs = require("fs"); const p = process.env.DSH_HOME + "/twin.log"; fs.appendFileSync(p, new Date().toISOString() + "  twin start node pid=" + process.pid + "\n"); fs.writeFileSync(process.env.DSH_HOME + "/.witness-no.pid", String(process.pid)); process.on("exit", (c) => fs.appendFileSync(p, new Date().toISOString() + "  twin exit code=" + c + "\n")); setInterval(() => {}, 3600000);' >/dev/null 2>&1
         fi
     ) &
-    twin=$!
-    # Non-node witness, same idea but a different program: `sleep` does nothing,
-    # allocates nothing and cannot fail on its own.
-    if command -v setsid >/dev/null 2>&1; then
-        setsid sleep 900 &
-    else
-        sleep 900 &
-    fi
-    sleep_pid=$!
-    printf '%s  witnesses started: launcher=%s sleep_shell=%s harness t=%s\n' \
-        "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$sleep_pid" "$(date '+%s')" >>"$DSH_HOME/twin.log"
-
+    (
+        # The same thing WITH /lib/zero_free.so, the library the kernel injects
+        # into anything named `node`. If this one dies while the other lives, that
+        # library is what has been killing the harness.
+        if command -v setsid >/dev/null 2>&1; then
+            setsid env LD_PRELOAD=/lib/zero_free.so node -e 'const fs = require("fs"); const p = process.env.DSH_HOME + "/twin.log"; fs.appendFileSync(p, new Date().toISOString() + "  twin-preload start node pid=" + process.pid + "\n"); fs.writeFileSync(process.env.DSH_HOME + "/.witness-pre.pid", String(process.pid)); process.on("exit", (c) => fs.appendFileSync(p, new Date().toISOString() + "  twin-preload exit code=" + c + "\n")); setInterval(() => {}, 3600000);' >/dev/null 2>&1
+        fi
+    ) &
+    # Second-grain record of every node process in the guest.
+    #
+    # The per-round check only says a witness was already gone by the time the
+    # harness ended, which leaves minutes of slack and cannot tell one death from
+    # two. This samples by name instead, so it covers the harness as well as the
+    # witnesses, and it records the vitals that would explain a death: process
+    # state, thread count and resident size. A process the kernel reaped for
+    # memory, or one that is sitting in D state first, looks different here from
+    # one that was shot.
+    (
+        while :; do
+            for pid in $(ps 2>/dev/null | awk '/[n]ode/ {print $1}'); do
+                state=$(sed -n 's/^State:[[:space:]]*\([A-Z]\).*/\1/p' "/proc/$pid/status" 2>/dev/null)
+                threads=$(sed -n 's/^Threads:[[:space:]]*\([0-9]*\).*/\1/p' "/proc/$pid/status" 2>/dev/null)
+                rss=$(awk '{print int($2 * 4096 / 1048576)}' "/proc/$pid/statm" 2>/dev/null)
+                printf '%s  node pid=%s state=%s threads=%s rssMB=%s\n' \
+                    "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" "${state:-?}" "${threads:-?}" "${rss:-?}" >>"$DSH_HOME/watch.log"
+            done
+            if [ -f "$DSH_HOME/watch.log" ]; then
+                tail -n 400 "$DSH_HOME/watch.log" >"$DSH_HOME/.watch.tmp" 2>/dev/null &&
+                    mv "$DSH_HOME/.watch.tmp" "$DSH_HOME/watch.log" 2>/dev/null
+            fi
+            sleep 2
+        done
+    ) & watcher=$!
+    printf '%s  witnesses: launcher=%s harness_start=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$(date '+%s')" >>"$DSH_HOME/twin.log"
     node --trace-exit --require "$DSH_HOME/node-events.cjs" --expose-internals "$DSH_BIN" --profile tui $resume_arg "$@" 2>"$DSH_HOME/tui.err"
     status=$?
 
-    # Did the twin outlive it? (see the comment where the twin starts)
+    # Reap orphans between rounds as well, not just at startup.
     #
-    # The check cannot use $twin: `setsid` forks when the calling subshell is
-    # already a process group leader, so the subshell/setsid pid is gone within
-    # milliseconds no matter what happens to node. The pid that matters is the one
-    # node printed itself.
-    twin_pid=$(sed -n 's/.*twin start node pid=\([0-9]*\).*/\1/p' "$DSH_HOME/twin.log" 2>/dev/null | tail -n 1)
-    if [ -n "$twin_pid" ] && kill -0 "$twin_pid" 2>/dev/null; then
-        printf '%s  twin node pid=%s ALIVE after round %s (the harness died first)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$twin_pid" "$round" >>"$DSH_HOME/twin.log"
-        kill "$twin_pid" 2>/dev/null
-    else
-        printf '%s  twin node pid=%s gone at round %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$twin_pid" "$round" >>"$DSH_HOME/twin.log"
-    fi
-    # A witness that is not node at all: if a plain `sleep` in its own session
-    # also disappears, the killer is taking out everything in the guest; if the
-    # sleep survives while node dies, it is aimed at node specifically.
-    if [ -n "$sleep_pid" ] && kill -0 "$sleep_pid" 2>/dev/null; then
-        printf '%s  sleep witness pid=%s alive\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$sleep_pid" >>"$DSH_HOME/twin.log"
-    else
-        printf '%s  sleep witness pid=%s gone\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$sleep_pid" >>"$DSH_HOME/twin.log"
-    fi
-    kill "$sleep_pid" 2>/dev/null
+    # A harness started by a session that then died is reparented to init and left
+    # there: nothing in this guest reaps it, and each one is a full dsh install
+    # (hundreds of plugin packages) that iOS will count against this app. Killing
+    # them here keeps the invariant true while the app is running, not only at the
+    # moment a new session takes over.
+    for pid in $(ps -o pid,ppid,args 2>/dev/null | awk '$2 == 1 && (/bin\.js/ || /dsh-tui/ || /[n]ode/) { print $1 }'); do
+        [ "$pid" = "$$" ] && continue
+        printf '%s  round %s: reaping orphan pid=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" "$pid" >>"$DSH_HOME/takeover.log"
+        kill -9 "$pid" 2>/dev/null || true
+    done
+
+    # Round-level verdict on the witnesses. They are deliberately NOT killed here:
+    # whether a node process outlives the harness is the whole question, and a
+    # cleanup that runs at the same instant the harness dies would answer it
+    # wrongly. The watcher above keeps sampling them by name.
+    for pair in "no:.witness-no.pid" "pre:.witness-pre.pid"; do
+        label=${pair%%:*}
+        pidfile=${pair#*:}
+        pid=$(cat "$DSH_HOME/$pidfile" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            printf '%s  round %s: %s pid=%s STILL ALIVE when the harness died\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" "$label" "$pid" >>"$DSH_HOME/twin.log"
+        else
+            printf '%s  round %s: %s pid=%s gone\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" "$label" "$pid" >>"$DSH_HOME/twin.log"
+        fi
+    done
+    rm -f "$DSH_HOME/.witness-no.pid" "$DSH_HOME/.witness-pre.pid"
+    kill "$watcher" 2>/dev/null
 
     # Post-mortem: the kernel's version and the process table at the moment of
     # death. Nothing inside the harness runs at that moment, so the cause has to
