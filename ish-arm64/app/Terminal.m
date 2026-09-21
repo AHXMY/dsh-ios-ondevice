@@ -51,7 +51,16 @@ typedef struct linux_tty *tty_t;
 @property (nonatomic) BOOL dshSawAlternateScreen;
 @property (nonatomic, strong, nullable) NSData *dshOutputTail;
 
+// DSH: window-size reports are coalesced before they reach the guest. A burst
+// from one keyboard animation used to arrive as many window-size changes.
+@property (nonatomic) int lastAppliedCols;
+@property (nonatomic) int lastAppliedRows;
+@property (nonatomic) int pendingCols;
+@property (nonatomic) int pendingRows;
+
 - (void)dshNoteAlternateScreen:(const void *)buf length:(int)len;
+- (void)requestWindowSizeCols:(int)cols rows:(int)rows;
+- (void)flushWindowSize;
 
 @end
 
@@ -163,20 +172,54 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
 
 - (void)syncWindowSize {
     [self.webView evaluateJavaScript:@"exports.getSize()" completionHandler:^(NSArray<NSNumber *> *dimensions, NSError *error) {
-        int cols = dimensions[0].intValue;
-        int rows = dimensions[1].intValue;
-        if (self.tty == NULL)
+        if (error != nil || dimensions.count < 2)
             return;
-#if !ISH_LINUX
-        lock(&self.tty->lock);
-        tty_set_winsize(self.tty, (struct winsize_) {.col = cols, .row = rows});
-        unlock(&self.tty->lock);
-#else
-        async_do_in_workqueue(^{
-            self->_tty->ops->resize(self->_tty, cols, rows);
-        });
-#endif
+        [self requestWindowSizeCols:dimensions[0].intValue rows:dimensions[1].intValue];
     }];
+}
+
+/// Record a terminal size, and apply it once the view has settled.
+///
+/// hterm reports a size every time its view changes, and showing or hiding the
+/// iOS keyboard animates that view -- so one keyboard toggle produces a burst of
+/// reports. Every one of them used to reach the guest as a window-size change and
+/// a SIGWINCH to the foreground process group, and on this platform the process
+/// reading the terminal has been observed to end seconds after such a change, with
+/// no callback inside it running (see LinuxPTY.c for the fatal path this was
+/// traced to). Two guards fix the storm: a size equal to the one already applied
+/// is not a change, and a burst collapses to its final value, applied after a
+/// short settling delay.
+- (void)requestWindowSizeCols:(int)cols rows:(int)rows {
+    if (cols == self.lastAppliedCols && rows == self.lastAppliedRows)
+        return;
+    if (cols == self.pendingCols && rows == self.pendingRows)
+        return;
+    self.pendingCols = cols;
+    self.pendingRows = rows;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(flushWindowSize)
+                                               object:nil];
+    [self performSelector:@selector(flushWindowSize) withObject:nil afterDelay:0.15];
+}
+
+- (void)flushWindowSize {
+    if (self.tty == NULL)
+        return;
+    int cols = self.pendingCols;
+    int rows = self.pendingRows;
+    if (cols == self.lastAppliedCols && rows == self.lastAppliedRows)
+        return;
+    self.lastAppliedCols = cols;
+    self.lastAppliedRows = rows;
+#if !ISH_LINUX
+    lock(&self.tty->lock);
+    tty_set_winsize(self.tty, (struct winsize_) {.col = cols, .row = rows});
+    unlock(&self.tty->lock);
+#else
+    async_do_in_workqueue(^{
+        self->_tty->ops->resize(self->_tty, cols, rows);
+    });
+#endif
 }
 
 - (void)setEnableVoiceOverAnnounce:(BOOL)enableVoiceOverAnnounce {

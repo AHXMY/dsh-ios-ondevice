@@ -173,6 +173,15 @@ if [ -r /proc/ish/documents ]; then
                             rmdir "$DSH_HOME/sessions/sessions" 2>/dev/null || true
                         fi
                         printf '%s\n' "$swant" >"$DSH_HOME/.sessions-restored-sha" 2>/dev/null || true
+                        # A restored conversation is a conversation from another
+                        # installation, and resuming one rebuilds the composition
+                        # that produced it -- which is exactly what a session
+                        # created before this deployment's profile patch carries:
+                        # no model route at all. Auto-resuming such a session is
+                        # how a fresh install turns into "has no provider/model"
+                        # every single time. Start clean instead; the history is
+                        # still there for the user to pick with /resume.
+                        touch "$DSH_HOME/.sessions-just-restored" 2>/dev/null || true
                         count=$(ls -1d "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | wc -l | tr -d ' ')
                         printf '\033[1;32m已恢复历史会话 %s 个（%s）\033[0m\n' "$count" "$(printf '%s' "$swant" | cut -c1-12)"
                         sleep 1
@@ -278,11 +287,26 @@ if [ "$#" -eq 0 ]; then
         # A preset was just chosen: it only takes effect on a session that has
         # not started, so resuming the previous one would defeat the request.
         resume_arg=""
+    elif [ -f "$DSH_HOME/.new-session" ]; then
+        # A new conversation was asked for from inside the terminal. The TUI's
+        # /new writes this file, because a session cannot replace itself while it
+        # is running -- the request is honoured here, at the next start.
+        rm -f "$DSH_HOME/.new-session" 2>/dev/null || true
+        printf '  新会话（历史会话：输入 /resume 选择）\n'
+        resume_arg=""
     else
+        # Otherwise put the conversation back.
+        #
+        # This is the point of the loop. The harness ends on its own every few
+        # minutes on this platform -- always status 0, always an empty stderr, no
+        # signal and no stdin event recorded inside the process, so the cause is
+        # still open. What is certain is that an unexpected restart must not cost
+        # the user their conversation: whichever session was open comes back. A
+        # fresh one is asked for explicitly, with /new.
         newest=$(ls -1dt "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | head -n 1 || true)
         if [ -n "$newest" ]; then
             sid=$(basename "$newest")
-            printf '  恢复上次会话 %s\n' "$sid"
+            printf '  恢复会话 %s（要开新会话：/new）\n' "$sid"
             resume_arg="--resume=$sid"
         fi
     fi
@@ -372,10 +396,176 @@ if [ $((_now - _prev)) -ge 60 ]; then
         done
     ) &
 fi
-# The probe still runs and still logs; it does not announce itself on screen
-# any more, because the launch screen covers this moment and a line about an
-# internal log is noise the user has to read past.
-:
+printf '  模型通路探针在跑（日志 %s/model-path.log）\n' "$DSH_HOME" >/dev/null 2>&1 || true
+
+# The instrument that names the cause of a clean exit.
+#
+# Written here rather than shipped in the image so it can be changed without a
+# rebuild: the harness has been exiting with status 0 and an empty stderr on a
+# few-minute cadence, `--trace-exit` printed nothing (so nothing calls exit), and
+# that leaves exactly one candidate -- the event loop draining because stdin
+# ended. This records the order of events so the next occurrence says which
+# happened: a signal, stdin ending, or the loop emptying on its own.
+cat >"$DSH_HOME/node-events.cjs" <<'DSH_NODE_EVENTS'
+// Records what ends the harness's process, and what memory looked like first.
+//
+// Loaded with `node --require`, so it runs inside the process that dies. Two
+// questions, one file:
+//
+//   1. How does it end? Every catchable signal, stdin ending, the event loop
+//      draining and the exit callback are all recorded. On the occurrence this
+//      file was written for, NONE of them fired -- which is what SIGKILL looks
+//      like, and the only signal in that set a process cannot observe.
+//
+//   2. How much memory was there? RSS of this process plus the guest's own
+//      MemAvailable, sampled on a timer. The guest is a memory-capped virtual
+//      machine, the harness is the largest thing inside it, and the interval
+//      between deaths (five to six minutes) is the shape of memory filling up
+//      rather than of anything on a clock -- so the last few samples before a
+//      death either show the wall arriving or rule it out.
+const fs = require('fs');
+const path = require('path');
+const home = process.env.DSH_HOME || '/root/.dsh';
+const events = path.join(home, 'node-events.log');
+const memory = path.join(home, 'node-memory.log');
+const started = Date.now();
+const mb = (bytes) => (bytes / 1048576).toFixed(1);
+
+const say = (file, message) => {
+    try {
+        fs.appendFileSync(file, new Date().toISOString() + '  +' +
+            ((Date.now() - started) / 1000).toFixed(1) + 's  ' + message + '\n');
+    } catch {}
+};
+
+const guestAvailableMb = () => {
+    try {
+        const info = fs.readFileSync('/proc/meminfo', 'utf8');
+        const available = /MemAvailable:\s+(\d+) kB/.exec(info);
+        const total = /MemTotal:\s+(\d+) kB/.exec(info);
+        return (available ? (available[1] / 1024).toFixed(0) : '?') + '/' +
+               (total ? (total[1] / 1024).toFixed(0) : '?');
+    } catch {
+        return 'unreadable';
+    }
+};
+
+say(events, 'start pid=' + process.pid + ' script=' + process.argv[1]);
+process.on('exit', (code) => say(events, 'exit code=' + code));
+process.on('beforeExit', (code) => say(events, 'beforeExit code=' + code + ' (event loop drained)'));
+['SIGHUP', 'SIGINT', 'SIGTERM', 'SIGQUIT', 'SIGWINCH', 'SIGTSTP', 'SIGCONT'].forEach((signal) => {
+    process.on(signal, () => say(events, 'signal ' + signal));
+});
+for (const name of ['stdin', 'stdout', 'stderr']) {
+    const stream = process[name];
+    if (!stream) continue;
+    stream.on('end', () => say(events, name + ' end'));
+    stream.on('close', () => say(events, name + ' close'));
+    stream.on('error', (error) => say(events, name + ' error ' + (error && error.code)));
+}
+if (process.stdin && process.stdin.isTTY) {
+    say(events, 'stdin is a tty');
+    process.stdout.on('resize', () =>
+        say(events, 'resize ' + process.stdout.columns + 'x' + process.stdout.rows));
+}
+
+// Heap ceiling: the OOM hypothesis says the guest's kernel kills this process
+// because it is the biggest thing in a capped virtual machine. Capping V8's old
+// space makes it collect instead of growing into the wall, which turns a kill
+// into a slow-down -- and if the deaths stop, that is the answer.
+if (!process.env.DSH_NO_HEAP_CAP) {
+    try {
+        const v8 = require('v8');
+        const configured = v8.getHeapStatistics().heap_size_limit / 1048576;
+        say(events, 'heap limit ' + configured.toFixed(0) + ' MB at start');
+    } catch {}
+}
+
+// Several ways to ask for the process's real footprint.
+//
+// `process.memoryUsage().rss` came back 0 on this platform, and the guest's
+// /proc/meminfo is not trustworthy either (it reported 3786 MB free with nothing
+// used), so the only way to tell whether a memory wall is involved is to try
+// every source and keep whatever answers. A kill by the kernel's out-of-memory
+// killer leaves no trace in the process, so the number has to come from outside
+// the heap: RSS, which includes the 250 packages' code and every buffer.
+const readRssMb = () => {
+    const sources = [];
+    try {
+        const status = fs.readFileSync('/proc/self/status', 'utf8');
+        const m = /VmRSS:\s+(\d+) kB/.exec(status);
+        if (m) sources.push((m[1] / 1024).toFixed(0) + 'MB(status)');
+    } catch {}
+    try {
+        const statm = fs.readFileSync('/proc/self/statm', 'utf8').trim().split(/\s+/);
+        if (statm.length > 1) sources.push((Number(statm[1]) * 4096 / 1048576).toFixed(0) + 'MB(statm)');
+    } catch {}
+    const self = process.memoryUsage().rss / 1048576;
+    if (self > 0) sources.push(self.toFixed(0) + 'MB(hint)');
+    return sources.length ? sources.join(' ') : 'unreadable';
+};
+
+let ticks = 0;
+const timer = setInterval(() => {
+    const usage = process.memoryUsage();
+    say(memory, 'rss=' + readRssMb() + ' heapUsed=' + mb(usage.heapUsed) + 'MB heapTotal=' + mb(usage.heapTotal) + 'MB guest=' + guestAvailableMb() + 'MB');
+    ticks += 1;
+    if (ticks === 1) say(events, 'memory sampling started');
+}, 10000);
+timer.unref();
+DSH_NODE_EVENTS
+# Memory and kernel messages, sampled.
+#
+# The probe that runs inside the harness records stdin ending, beforeExit, exit
+# and the catchable signals -- and on the occurrence it witnessed, NONE of them
+# fired. A process that dies without any of those was killed with a signal it
+# cannot catch, and on this emulator the prime suspect is the guest's own
+# out-of-memory killer: the harness is the largest thing in a memory-capped
+# virtual machine, and the interval (five to six minutes) is the shape of memory
+# filling up rather than of anything on a timer. Both halves of that claim are
+# cheap to record, so record them: what memory looked like, and what the kernel
+# said about killing something.
+(
+    while :; do
+        {
+            printf '%s  ' "$(date '+%Y-%m-%d %H:%M:%S')"
+            free -m 2>/dev/null | tr '\n' ' ' || true
+            printf '\n'
+        } >>"$DSH_HOME/memory.log" 2>/dev/null || true
+        if [ -f "$DSH_HOME/memory.log" ]; then
+            tail -n 240 "$DSH_HOME/memory.log" >"$DSH_HOME/.memory.tmp" 2>/dev/null &&
+                mv "$DSH_HOME/.memory.tmp" "$DSH_HOME/memory.log" 2>/dev/null
+        fi
+        dmesg 2>/dev/null | tail -n 4 >>"$DSH_HOME/kernel.log" 2>/dev/null || true
+        if [ -f "$DSH_HOME/kernel.log" ]; then
+            tail -n 200 "$DSH_HOME/kernel.log" >"$DSH_HOME/.kernel.tmp" 2>/dev/null &&
+                mv "$DSH_HOME/.kernel.tmp" "$DSH_HOME/kernel.log" 2>/dev/null
+        fi
+        sleep 10
+    done
+) &
+
+# Probe self-test, run once per session.
+#
+# The harness keeps ending with status 0 while the callbacks installed inside it
+# never record a thing, and those two facts cannot both be true of the same
+# process -- unless the recording itself is what fails. This exits a throwaway
+# node process explicitly and reports whether its own exit callback managed to
+# write, which separates "nothing fired" from "the log quietly went nowhere".
+if [ ! -f "$DSH_HOME/probe-selftest.log" ] || [ "$(wc -l <"$DSH_HOME/probe-selftest.log" 2>/dev/null | tr -d ' ')" = "0" ]; then
+    node -e '
+      const fs = require("fs");
+      const target = process.env.DSH_HOME + "/probe-selftest.log";
+      const write = (line) => {
+        try { fs.appendFileSync(target, line + "\n"); }
+        catch (error) { console.error("selftest write failed: " + (error && error.code)); }
+      };
+      process.on("beforeExit", () => write("beforeExit fired"));
+      process.on("exit", (code) => write("exit fired code=" + code));
+      process.exit(7);
+    ' 2>>"$DSH_HOME/tui.err" || true
+fi
+printf '  探针自检: %s\n' "$(tr '\n' ' ' <"$DSH_HOME/probe-selftest.log" 2>/dev/null || echo '（无记录）')"
 
 round=0
 while :; do
@@ -402,7 +592,15 @@ while :; do
         printf '  上一轮自己退出了（exit=%s，见 %s/tui-exits.log）\n' "$status" "$DSH_HOME"
     fi
     printf '  \033[2m正在加载 harness，约 20~40 秒；这段时间键盘没有反应是正常的…\033[0m\n'
-    node --expose-internals "$DSH_BIN" --profile tui $resume_arg "$@" 2>"$DSH_HOME/tui.err"
+    # `--trace-exit` makes a deliberate exit print the stack that called it.
+    #
+    # Nothing was printed, which is itself the finding: the harness is not calling
+    # process.exit(), it is ending because its event loop empties -- i.e. its
+    # standard input reaches EOF. That points at the app-side session being
+    # rebuilt, not at anything inside the harness. The preload below records the
+    # order of events (beforeExit, stdin end/close, signals) so the next exit has
+    # a cause attached instead of a theory.
+    node --trace-exit --require "$DSH_HOME/node-events.cjs" --expose-internals "$DSH_BIN" --profile tui $resume_arg "$@" 2>"$DSH_HOME/tui.err"
     status=$?
     printf '\n\033[1;33m终端已重启（第 %s 轮）\033[0m\n' "$((round + 1))"
     [ -s "$DSH_HOME/tui.err" ] && tail -n 5 "$DSH_HOME/tui.err"
@@ -414,10 +612,11 @@ while :; do
         printf '\n===== %s  exit=%s  round=%s =====\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$status" "$round"
         [ -s "$DSH_HOME/tui.err" ] && tail -n 12 "$DSH_HOME/tui.err"
     } >>"$DSH_HOME/tui-exits.log" 2>/dev/null || true
-    # The conversation comes back with the next round: re-resolve the resume
-    # target before restarting, and keep the pause short -- every second here is
-    # a second of a terminal that cannot be typed into.
-    newest=$(ls -1dt "$DSH_HOME"/sessions/*/main-session-* 2>/dev/null | head -n 1 || true)
-    [ -n "$newest" ] && resume_arg="--resume=$(basename "$newest")"
+    # A restart is a new conversation, the same as /quit is.
+    #
+    # This used to re-resolve the newest session before every round, which is
+    # what made /quit feel like it did nothing: the harness came back up inside
+    # the conversation you had just left. The pause stays short -- every second
+    # here is a second of a terminal that cannot be typed into.
     sleep 1
 done
