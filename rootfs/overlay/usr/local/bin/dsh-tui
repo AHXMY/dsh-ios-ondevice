@@ -632,28 +632,54 @@ while :; do
         fi
     ) &
     twin=$!
+    # Non-node witness, same idea but a different program: `sleep` does nothing,
+    # allocates nothing and cannot fail on its own.
+    if command -v setsid >/dev/null 2>&1; then
+        setsid sleep 900 &
+    else
+        sleep 900 &
+    fi
+    sleep_pid=$!
+    printf '%s  witnesses started: launcher=%s sleep_shell=%s harness t=%s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$sleep_pid" "$(date '+%s')" >>"$DSH_HOME/twin.log"
 
     node --trace-exit --require "$DSH_HOME/node-events.cjs" --expose-internals "$DSH_BIN" --profile tui $resume_arg "$@" 2>"$DSH_HOME/tui.err"
     status=$?
 
     # Did the twin outlive it? (see the comment where the twin starts)
-    if kill -0 "$twin" 2>/dev/null; then
-        printf '%s  twin alive after round %s (the harness died first)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" >>"$DSH_HOME/twin.log"
-        kill "$twin" 2>/dev/null
+    #
+    # The check cannot use $twin: `setsid` forks when the calling subshell is
+    # already a process group leader, so the subshell/setsid pid is gone within
+    # milliseconds no matter what happens to node. The pid that matters is the one
+    # node printed itself.
+    twin_pid=$(sed -n 's/.*twin start node pid=\([0-9]*\).*/\1/p' "$DSH_HOME/twin.log" 2>/dev/null | tail -n 1)
+    if [ -n "$twin_pid" ] && kill -0 "$twin_pid" 2>/dev/null; then
+        printf '%s  twin node pid=%s ALIVE after round %s (the harness died first)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$twin_pid" "$round" >>"$DSH_HOME/twin.log"
+        kill "$twin_pid" 2>/dev/null
     else
-        printf '%s  twin gone too at round %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" >>"$DSH_HOME/twin.log"
+        printf '%s  twin node pid=%s gone at round %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$twin_pid" "$round" >>"$DSH_HOME/twin.log"
     fi
-    wait "$twin" 2>/dev/null
+    # A witness that is not node at all: if a plain `sleep` in its own session
+    # also disappears, the killer is taking out everything in the guest; if the
+    # sleep survives while node dies, it is aimed at node specifically.
+    if [ -n "$sleep_pid" ] && kill -0 "$sleep_pid" 2>/dev/null; then
+        printf '%s  sleep witness pid=%s alive\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$sleep_pid" >>"$DSH_HOME/twin.log"
+    else
+        printf '%s  sleep witness pid=%s gone\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$sleep_pid" >>"$DSH_HOME/twin.log"
+    fi
+    kill "$sleep_pid" 2>/dev/null
 
     # Post-mortem: the kernel's version and the process table at the moment of
     # death. Nothing inside the harness runs at that moment, so the cause has to
     # be recorded from outside it -- and until now nothing was.
     {
-        printf '\n===== %s  round=%s  exit=%s =====\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" "$status"
+        printf '\n===== %s  round=%s  exit=%s  guest_uptime=%s =====\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$round" "$status" "$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
         printf -- '--- dmesg ---\n'
         dmesg 2>&1 | tail -n 30
-        printf -- '--- ps ---\n'
-        ps 2>&1 | tail -n 20
+        printf -- '--- ps (pid,ppid,pgid,sid,args) ---\n'
+        ps -o pid,ppid,pgid,sid,args 2>/dev/null || ps 2>&1 | tail -n 20
+        printf -- '--- node processes left ---\n'
+        ps 2>/dev/null | grep -c '[n]ode' || true
         printf -- '--- free ---\n'
         free -m 2>&1 | head -n 3
         printf -- '--- tty size ---\n'
