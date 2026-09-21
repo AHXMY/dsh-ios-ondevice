@@ -129,7 +129,7 @@
     # Claude Code surface it is modelled on: the calls and their output are the
     # part a user reads, and hiding them leaves a wall of prose. Expanded is the
     # shape that matches the surfaces this UI is copying.
-    toolCardVisibility: expanded
+    toolCardVisibility: collapsed
     maxToolOutputLines: 12
     notifications: false
     resumeHint: !!js "process.env.DSH_TUI_RESUME_HINT ?? 'To resume this session: dsh --profile tui --resume={session}'"
