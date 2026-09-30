@@ -10,6 +10,7 @@
 #include <linux/start_kernel.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
+#include <linux/err.h>
 #include <linux/notifier.h>
 #include <linux/termios.h>
 #include <linux/string.h>
@@ -144,9 +145,34 @@ static void session_cleanup(struct subprocess_info *info) {
 
 void linux_start_session(const char *exe, const char *const *argv, const char *const *envp, StartSessionDoneBlock done) {
     struct ish_session *session = kzalloc(sizeof(*session), GFP_KERNEL);
+    if (session == NULL) {
+        done(-ENOMEM, 0, NULL);
+        return;
+    }
+    // ios_pty_open returns an ERR_PTR on failure, not NULL, and its result used
+    // to be stored without being looked at. A failed /dev/ptmx open or a failed
+    // allocation then reached session_init as a `struct file *`, and
+    // vfs_ioctl(TIOCSCTTY) dereferenced the error value as an address. Refuse
+    // here instead: nothing has been handed out yet, and `done` already reports
+    // the code to the terminal view, which turns it into a visible failure.
     session->tty = ios_pty_open(&session->terminal);
+    if (session->tty == NULL || IS_ERR(session->tty)) {
+        long err = session->tty == NULL ? -ENXIO : PTR_ERR(session->tty);
+        kfree(session);
+        done((int) err, 0, NULL);
+        return;
+    }
     session->callback = done;
     struct subprocess_info *proc = call_usermodehelper_setup(exe, (char **) argv, (char **) envp, GFP_KERNEL, session_init, session_cleanup, session);
+    if (proc == NULL) {
+        // Same ownership session_cleanup would have unwound: the pty owns the
+        // struct file, the terminal carries the Objective-C reference.
+        fput(session->tty);
+        objc_put(session->terminal);
+        kfree(session);
+        done(-ENOMEM, 0, NULL);
+        return;
+    }
     int err = call_usermodehelper_exec(proc, UMH_WAIT_EXEC);
     if (err < 0)
         done(err, 0, NULL);

@@ -164,6 +164,13 @@ static NSString *const kPrevMountPoint = @"/mnt/dsh-previous-root";
         @"if [ -d \"$P/root/.dsh\" ]; then rm -rf /root/.dsh && cp -a \"$P/root/.dsh\" /root/.dsh; fi; "
         @"install -m 0644 /usr/local/share/dsh/home.patch.yml /root/.dsh/cordis.patch.yml; "
         @"[ -d /root/.dsh/profiles/web ] && install -m 0644 /usr/local/share/dsh/cordis.patch.yml /root/.dsh/profiles/web/cordis.patch.yml; "
+        // The tui patch carries model routing, presets and the retry policy, and
+        // it has no other reinstall path: dsh-serve does not install it, dsh-tui
+        // installs nothing, and the build only writes it at image time. Without
+        // this line the cp -a above leaves the previous image's copy in place for
+        // good -- the same class of failure as the build-time overwrite that used
+        // to produce "no provider/model" on every fresh install.
+        @"[ -d /root/.dsh/profiles/tui ] && install -m 0644 /usr/local/share/dsh/tui.patch.yml /root/.dsh/profiles/tui/cordis.patch.yml; "
         @"if [ -d \"$P/root/workspace\" ]; then mkdir -p /root/workspace && cp -a \"$P/root/workspace/.\" /root/workspace/; fi; "
         @"for f in .gitconfig .ssh .npmrc .profile .ashrc; do [ -e \"$P/root/$f\" ] && cp -a \"$P/root/$f\" /root/ || true; done; "
         @"echo MIGRATION-DONE", kPrevMountPoint];

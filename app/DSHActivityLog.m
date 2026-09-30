@@ -72,7 +72,10 @@ static DSHActivityOutcome OutcomeFromName(NSString *name) {
         @"source": SourceName(self.source),
         @"name": self.name,
         @"outcome": DSHActivityOutcomeName(self.outcome),
-        @"duration": @(round(self.duration * 1000) / 1000),
+        // Rounded to milliseconds for readability, but only from a finite input:
+        // NSJSONSerialization raises on a non-finite number rather than failing
+        // softly, and this dictionary is what gets serialised.
+        @"duration": @(isfinite(self.duration) ? round(self.duration * 1000) / 1000 : 0),
     } mutableCopy];
     if (self.detail) out[@"detail"] = self.detail;
     if (self.result) out[@"result"] = self.result;
@@ -302,7 +305,18 @@ static DSHActivityOutcome OutcomeFromName(NSString *name) {
     NSMutableArray *rows = [NSMutableArray arrayWithCapacity:self.storage.count];
     for (DSHActivityEntry *entry in self.storage)
         [rows addObject:entry.dictionaryRepresentation];
-    NSData *data = [NSJSONSerialization dataWithJSONObject:rows options:0 error:nil];
+    // NSJSONSerialization raises on a value JSON cannot represent instead of
+    // returning nil with an error, and this runs on the activity log's own
+    // queue, where nothing above it catches: an unexpected value here would end
+    // the process from inside the audit trail. Losing one save is survivable;
+    // NSLog rather than the log buffer on purpose -- this file imports nothing
+    // but its own header.
+    NSData *data = nil;
+    @try {
+        data = [NSJSONSerialization dataWithJSONObject:rows options:0 error:nil];
+    } @catch (NSException *exception) {
+        NSLog(@"[dsh-ios] activity log serialisation failed: %@", exception.reason);
+    }
     // Excluded from backups: it is a local audit trail, not user content, and
     // it should not follow the user onto another device.
     NSURL *url = [self fileURL];

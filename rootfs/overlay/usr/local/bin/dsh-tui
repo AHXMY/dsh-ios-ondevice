@@ -100,6 +100,51 @@ unpack_preset() {
     return 1
 }
 
+# Copy the diagnostics out, once per start, while Documents is still mounted.
+#
+# The one question that has never been answerable from the phone is why the
+# harness ends on its own: always status 0, always an empty stderr, no signal
+# and no stdin event recorded inside the process. Every probe that could answer
+# it already writes a file -- heartbeat.log (was the emulator itself stopped?),
+# watch.log (state/threads/RSS per node process, sampled every two seconds),
+# node-events.log (the witness inside the process), memory.log and kernel.log
+# (the out-of-memory hypothesis), twin.log -- and not one of them ever leaves
+# the device, because this mount is up for a few seconds at startup and nothing
+# copied them anywhere.
+#
+# What lands in Documents is the PREVIOUS session's evidence, which is the one
+# that matters. Best-effort throughout, on purpose: failing to export
+# diagnostics must never be the reason the terminal does not start.
+copy_diagnostics_out() {
+    [ -d "$HOST_DOCS_MNT" ] || return 0
+    dest="$HOST_DOCS_MNT/dsh-diag"
+    mkdir -p "$dest" 2>/dev/null || return 0
+
+    for name in heartbeat.log watch.log tui-exits.log node-events.log \
+                node-memory.log memory.log kernel.log twin.log postmortem.log \
+                takeover.log launcher-starts.log model-path.log probe-selftest.log tui.err; do
+        [ -f "$DSH_HOME/$name" ] || continue
+        cp "$DSH_HOME/$name" "$dest/$name" 2>/dev/null || true
+    done
+
+    {
+        printf 'exported %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+        printf 'guest uptime: %s s\n' "$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
+        printf 'launcher pid: %s\n' "$$"
+        printf '\n--- last 14 lines of tui-exits.log (how the previous harness ended) ---\n'
+        tail -n 14 "$DSH_HOME/tui-exits.log" 2>/dev/null || printf '(no tui-exits.log)\n'
+        printf '\n--- last 8 lines of heartbeat.log (a gap here means the guest stopped) ---\n'
+        tail -n 8 "$DSH_HOME/heartbeat.log" 2>/dev/null || printf '(no heartbeat.log)\n'
+        printf '\n--- last 8 lines of watch.log (node state/threads/RSS) ---\n'
+        tail -n 8 "$DSH_HOME/watch.log" 2>/dev/null || printf '(no watch.log)\n'
+        printf '\n--- last 8 lines of node-events.log (witness inside the process) ---\n'
+        tail -n 8 "$DSH_HOME/node-events.log" 2>/dev/null || printf '(no node-events.log)\n'
+    } >"$dest/SUMMARY.txt" 2>/dev/null || true
+
+    printf '\033[2m  诊断日志已导出到 Documents/dsh-diag/（%s 个文件）\033[0m\n' \
+        "$(ls -1 "$dest" 2>/dev/null | wc -l | tr -d ' ')"
+}
+
 if [ -r /proc/ish/documents ]; then
     host_docs=$(cat /proc/ish/documents 2>/dev/null || true)
     if [ -n "$host_docs" ]; then
@@ -188,6 +233,9 @@ if [ -r /proc/ish/documents ]; then
                     fi
                 fi
             fi
+            # Export before releasing the mount: this is the only moment in the
+            # whole run when Documents is reachable from inside the guest.
+            copy_diagnostics_out
             umount "$HOST_DOCS_MNT" 2>/dev/null || true
         fi
     fi

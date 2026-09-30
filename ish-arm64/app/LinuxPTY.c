@@ -200,7 +200,10 @@ struct file *ios_pty_open(nsobj_t *terminal_out) {
 
     init_poll_funcptr(&pty->pt, poll_callback);
     __poll_t revents = vfs_poll(pty->ptm, &pty->pt);
-    if (revents)
+    // n_wqs only advances inside poll_callback, and the poll above is entitled
+    // not to call it for any queue at all. Indexing wqs[n_wqs - 1] in that case
+    // reads one entry before the array; there is nothing to wake, so skip.
+    if (revents && pty->n_wqs > 0)
         ptm_callback(&pty->wqs[pty->n_wqs-1].wq, 0, 0, NULL);
     return pts_file;
 }

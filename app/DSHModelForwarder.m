@@ -618,11 +618,13 @@ static NSData *DSHReadRequest(int fd, NSUInteger *headerLength) {
                                                                              label:[NSString stringWithFormat:@"%@ %@", method, path]];
     // Refuse rather than queue: past this many in flight, something is looping,
     // and piling on sockets is what killed the app before. The refusal is logged
-    // so a future storm is visible in Diagnostics instead of silent.
+    // through the same rate limiter as every other forward failure, because a
+    // refusal is answered with 503 and the guest retries -- so an unlimited line
+    // here writes, and fsyncs, at the retry rate, which is the flood this limiter
+    // exists to stop.
     if (!DSHTakeForwardSlot()) {
-        [DSHHarness.shared.log append:[NSString stringWithFormat:
-            @"[dsh-ios] forward %@ refused: %lu already in flight", connection.label,
-            (unsigned long) kMaxConcurrentForwards]];
+        DSHLogForwardFailure(connection.label, [NSString stringWithFormat:
+            @"%lu already in flight", (unsigned long) kMaxConcurrentForwards]);
         [connection refuseWithStatus:503 reason:@"Service Unavailable"
                              message:@"too many forwarded requests in flight\n"];
         return;
